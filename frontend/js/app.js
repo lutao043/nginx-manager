@@ -71,8 +71,12 @@ const App = (() => {
     $("#btnAddProxy").addEventListener("click", openAddProxy);
     $("#btnConfirmAddProxy").addEventListener("click", confirmAddProxy);
     $("#btnSaveTargets").addEventListener("click", saveTargets);
+    // 目标地址池
+    $("#btnAddPoolTarget").addEventListener("click", openAddPool);
+    $("#btnConfirmAddPool").addEventListener("click", confirmAddPool);
     bindModalClose("#addProxyModal");
     bindModalClose("#editTargetsModal");
+    bindModalClose("#addPoolModal");
   }
 
   /* ---------- 页签切换 ---------- */
@@ -82,7 +86,10 @@ const App = (() => {
     $("#tabProxies").classList.toggle("active", !isConfig);
     $("#viewConfig").hidden = !isConfig;
     $("#viewProxies").hidden = isConfig;
-    if (!isConfig) loadProxies();
+    if (!isConfig) {
+      loadPool();
+      loadProxies();
+    }
   }
 
   /* ---------- 向导保存 ---------- */
@@ -404,6 +411,87 @@ const App = (() => {
     }
   }
 
+  /* 目标地址池（模块内状态，加载后供下拉合并使用） */
+  let poolTargets = [];
+
+  async function loadPool() {
+    try {
+      const data = await api.proxyPool();
+      poolTargets = data.targets || [];
+      renderPoolList();
+    } catch (e) {
+      poolTargets = [];
+      $("#poolList").innerHTML = '<p class="muted">加载失败</p>';
+    }
+  }
+
+  function renderPoolList() {
+    const list = $("#poolList");
+    if (!poolTargets.length) {
+      list.innerHTML = '<p class="muted">暂无目标地址，点击「添加目标」创建</p>';
+      return;
+    }
+    list.innerHTML = "";
+    poolTargets.forEach((t) => {
+      const item = document.createElement("span");
+      item.className = "pool-item";
+      const label = document.createElement("span");
+      label.textContent = t;
+      label.title = t;
+      const del = document.createElement("button");
+      del.className = "pool-del";
+      del.type = "button";
+      del.textContent = "×";
+      del.title = "删除";
+      del.addEventListener("click", () => doRemovePoolTarget(t));
+      item.appendChild(label);
+      item.appendChild(del);
+      list.appendChild(item);
+    });
+  }
+
+  async function doRemovePoolTarget(target) {
+    const ok = await confirmDialog("从目标池删除 " + target + "？\n已写入各代理的备选不受影响。");
+    if (!ok) return;
+    try {
+      await api.removePoolTarget(target);
+      poolTargets = poolTargets.filter((t) => t !== target);
+      renderPoolList();
+      loadProxies(); // 重新渲染下拉（去掉已删目标）
+      toast("已从池删除: " + target, "success");
+    } catch (e) {
+      toast(e.message, "error");
+    }
+  }
+
+  function openAddPool() {
+    $("#addPoolTarget").value = "";
+    $("#addPoolError").hidden = true;
+    lockBody();
+    openModal("#addPoolModal");
+  }
+
+  async function confirmAddPool() {
+    const target = $("#addPoolTarget").value.trim();
+    if (!target) {
+      $("#addPoolError").textContent = "目标地址必填";
+      $("#addPoolError").hidden = false;
+      return;
+    }
+    try {
+      const res = await api.addPoolTarget(target);
+      closeModal("#addPoolModal");
+      unlockBody();
+      poolTargets = res.targets || [];
+      renderPoolList();
+      loadProxies();
+      toast("已添加目标: " + target, "success");
+    } catch (e) {
+      $("#addPoolError").textContent = e.message;
+      $("#addPoolError").hidden = false;
+    }
+  }
+
   function showProxyTest(test) {
     const el = $("#proxyTestResult");
     if (!test) { el.hidden = true; return; }
@@ -437,10 +525,19 @@ const App = (() => {
       const row = document.createElement("div");
       row.className = "proxy-item-row";
       const select = document.createElement("select");
-      (p.targets || []).forEach((t) => {
+      // 下拉选项 = 目标池地址 ∪ 该代理已有地址（去重，保持顺序）
+      const merged = [];
+      poolTargets.forEach((t) => { if (!merged.includes(t)) merged.push(t); });
+      (p.targets || []).forEach((t) => { if (!merged.includes(t)) merged.push(t); });
+      merged.forEach((t) => {
         const opt = document.createElement("option");
         opt.value = t;
-        opt.textContent = t + (t === p.active ? "（当前）" : "");
+        const inProxy = (p.targets || []).includes(t);
+        const inPool = poolTargets.includes(t);
+        const tags = [];
+        if (t === p.active) tags.push("当前");
+        if (!inProxy && inPool) tags.push("池");
+        opt.textContent = t + (tags.length ? "（" + tags.join("+") + "）" : "");
         if (t === p.active) opt.selected = true;
         select.appendChild(opt);
       });

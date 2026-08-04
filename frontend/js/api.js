@@ -68,6 +68,11 @@ const api = {
   switchProxy(path, target) { return this.put("/api/proxies/switch", { path, target }); },
   saveProxyTargets(path, targets) { return this.put("/api/proxies/targets", { path, targets }); },
   removeProxy(path) { return this._request("DELETE", "/api/proxies", { path }); },
+
+  // ---- 目标地址池 ----
+  proxyPool() { return this.get("/api/proxy-pool"); },
+  addPoolTarget(target) { return this.post("/api/proxy-pool", { target }); },
+  removePoolTarget(target) { return this._request("DELETE", "/api/proxy-pool", { target }); },
 };
 
 /* 简易 XSS 转义：用户数据插入 innerHTML 前必须过此函数 */

@@ -142,10 +142,43 @@
             <div id="proxyList" class="proxy-list"><p class="muted">加载中…</p></div>
           </div>
 
+          <!-- 目标地址池 -->
+          <div class="panel">
+            <div class="panel-title-row">
+              <span class="panel-title">目标地址池</span>
+              <div class="panel-actions">
+                <button id="btnAddPoolTarget" class="btn btn-primary btn-mini" type="button">＋ 添加目标</button>
+              </div>
+            </div>
+            <div class="proxy-tip muted small">统一管理常用目标地址；各代理下拉框可直接选用，无需逐个添加备选</div>
+            <div id="poolList" class="pool-list"><p class="muted">加载中…</p></div>
+          </div>
+
           <!-- 代理测试结果 -->
           <div class="test-result" id="proxyTestResult" hidden></div>
         </section>
       </div><!-- /viewProxies -->
+    </div>
+  </div>
+
+  <!-- 添加池目标弹窗 -->
+  <div class="modal-mask" id="addPoolModal" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <span class="panel-title">添加目标地址</span>
+        <button class="modal-close" type="button" aria-label="关闭" data-close>×</button>
+      </div>
+      <div class="modal-body">
+        <div class="wizard-field">
+          <label>目标地址（如 http://docker_balance 或 http://192.168.1.10:8080/）</label>
+          <input id="addPoolTarget" type="text" placeholder="http://docker_balance" autocomplete="off">
+        </div>
+        <div class="wizard-error" id="addPoolError" hidden></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" type="button" data-close>取消</button>
+        <button class="btn btn-primary" id="btnConfirmAddPool" type="button">添加</button>
+      </div>
     </div>
   </div>
 

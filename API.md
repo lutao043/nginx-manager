@@ -340,6 +340,7 @@
 ### PUT /api/proxies/switch
 
 切换某代理的激活目标。修改配置文件 + 自动备份 + `nginx -t` 校验，校验失败回滚。
+**若 target 不在该代理的备选列表中（如在目标地址池中），自动将其追加为备选后切换**（免去逐代理添加）。
 
 **请求体**
 
@@ -356,7 +357,7 @@
 **错误**
 - `400`：path/target 缺失。
 - `404`：path 对应的代理不存在。
-- `409`：target 不在该代理的 targets 列表中。
+- `409`：target 非合法目标地址（且不在该代理备选、不在目标池中）。
 - `409`：校验失败（已回滚）。
 
 ### PUT /api/proxies/targets
@@ -400,6 +401,68 @@
 - `400`：path 缺失。
 - `404`：path 对应的代理不存在。
 - `409`：校验失败（已回滚）。
+
+## 目标地址池（proxy pool）
+
+统一管理常用目标地址，供所有代理的下拉切换复用，避免逐代理添加备选。
+
+**持久化**：目标池独立存储于用户数据目录 `targets.json`（不写入 nginx 配置），
+后端启动时加载，增删即持久化。
+
+**与代理的关系**：
+- 前端渲染代理下拉框时，选项 = 目标池全部地址 ∪ 该代理已有备选地址（去重）。
+- 通过 `PUT /api/proxies/switch` 切换池中地址时，后端自动将该地址追加为该代理的备选并激活。
+- 删除池中地址**不影响**已写入各代理配置的备选（代理的备选独立存在于 nginx.conf）。
+
+### GET /api/proxy-pool
+
+返回目标地址池。
+
+**成功响应 200**
+
+```json
+{ "targets": ["http://docker_balance", "http://my_balance", "http://10.170.103.65:10040/"] }
+```
+
+### POST /api/proxy-pool
+
+添加目标地址。
+
+**请求体**
+
+```json
+{ "target": "http://zhang_balance" }
+```
+
+**成功响应 200**
+
+```json
+{ "ok": true, "targets": ["http://docker_balance", "http://my_balance", "http://zhang_balance"] }
+```
+
+**错误**
+- `400`：target 缺失或非合法地址（须 `http://` / `https://` / `unix:` 前缀）。
+- `409`：target 已存在于池中（去重）。
+
+### DELETE /api/proxy-pool
+
+删除目标地址。
+
+**请求体**
+
+```json
+{ "target": "http://zhang_balance" }
+```
+
+**成功响应 200**
+
+```json
+{ "ok": true, "targets": ["http://docker_balance", "http://my_balance"] }
+```
+
+**错误**
+- `400`：target 缺失。
+- `404`：target 不在池中。
 
 ## 前端行为约定
 

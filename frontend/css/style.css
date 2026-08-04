@@ -284,6 +284,20 @@ body {
 }
 .targets-edit-add { margin-bottom: 8px; }
 
+/* 目标地址池 */
+.pool-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.pool-item {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--bg-panel-2); border: 1px solid var(--border);
+  border-radius: 999px; padding: 4px 6px 4px 14px;
+  font-family: var(--mono); font-size: 12px;
+}
+.pool-item .pool-del {
+  background: none; border: none; color: var(--text-3); cursor: pointer;
+  font-size: 14px; line-height: 1; padding: 2px 6px; border-radius: 50%;
+}
+.pool-item .pool-del:hover { color: var(--danger); background: rgba(224, 108, 95, .15); }
+
 /* ---------- 弹窗 ---------- */
 .modal-mask {
   position: fixed; inset: 0; z-index: 50;

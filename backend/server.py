@@ -96,6 +96,46 @@ class SettingsStore:
         return bool(self.data.get("nginxPath") and self.data.get("confDir"))
 
 
+class TargetPoolStore:
+    """目标地址池持久化。文件：<user_data>/targets.json
+    统一管理常用 proxy_pass 目标地址，供各代理下拉切换复用。"""
+
+    def __init__(self, root: str):
+        self.path = os.path.join(root, "targets.json")
+        self.targets: list = self._load()
+
+    def _load(self) -> list:
+        if os.path.isfile(self.path):
+            try:
+                with open(self.path, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                if isinstance(d, list):
+                    return [str(t) for t in d]
+            except (json.JSONDecodeError, OSError):
+                pass
+        return []
+
+    def save(self) -> None:
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(self.targets, f, ensure_ascii=False, indent=2)
+
+    def add(self, target: str) -> bool:
+        target = target.strip()
+        if not target or target in self.targets:
+            return False
+        self.targets.append(target)
+        self.save()
+        return True
+
+    def remove(self, target: str) -> bool:
+        target = target.strip()
+        if target not in self.targets:
+            return False
+        self.targets.remove(target)
+        self.save()
+        return True
+
+
 # ---------- 备份 ----------
 
 def timestamp_id() -> str:
@@ -173,6 +213,7 @@ def pick_nginx_via_dialog() -> dict:
 class Handler(BaseHTTPRequestHandler):
     server_version = "nginx-manager/0.1"
     settings: SettingsStore = None  # type: ignore
+    pool: TargetPoolStore = None  # type: ignore
     data_dirs: dict = {}
     controller: NginxController = None  # type: ignore
 
@@ -310,6 +351,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_logs_error(qs)
         elif path == "/api/proxies":
             self._api_proxies_get()
+        elif path == "/api/proxy-pool":
+            self._api_proxy_pool_get()
         elif path == "/api/settings":
             self._api_settings_get()
         else:
@@ -404,6 +447,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_backups_restore()
         elif path == "/api/proxies":
             self._api_proxies_add()
+        elif path == "/api/proxy-pool":
+            self._api_proxy_pool_add()
         else:
             self._err(404, "接口不存在")
 
@@ -541,6 +586,8 @@ class Handler(BaseHTTPRequestHandler):
     def _route_api_delete(self, path: str) -> None:
         if path == "/api/proxies":
             self._api_proxies_remove()
+        elif path == "/api/proxy-pool":
+            self._api_proxy_pool_remove()
         else:
             self._err(404, "接口不存在")
 
@@ -668,6 +715,19 @@ class Handler(BaseHTTPRequestHandler):
         target = str(body.get("target", ""))
         original = pm.content
         backup_id = make_backup(self.data_dirs["backups"], self.controller.conf_dir, "nginx.conf")
+
+        # 若 target 不在该代理备选中（如从目标池选的），先自动追加为备选再切换
+        proxy_cur = next((p for p in pm.list_proxies() if p["path"] == path), None)
+        if proxy_cur is None:
+            self._err(404, f"代理不存在: {path}")
+            return
+        if target not in proxy_cur.get("targets", []):
+            new_targets = list(proxy_cur.get("targets", [])) + [target]
+            res = pm.update_targets(path, new_targets)
+            if not res.get("ok"):
+                self._err(409, res.get("error", "自动加入备选失败"))
+                return
+
         res = pm.switch(path, target)
         if not res.get("ok"):
             err = res.get("error", "")
@@ -680,6 +740,37 @@ class Handler(BaseHTTPRequestHandler):
             return
         proxy = next((p for p in pm.list_proxies() if p["path"] == path), None)
         self._ok({"ok": True, "proxy": proxy, "backupId": backup_id, "test": test})
+
+    # ---- 目标地址池 ----
+
+    def _api_proxy_pool_get(self) -> None:
+        self._ok({"targets": list(Handler.pool.targets)})
+
+    def _api_proxy_pool_add(self) -> None:
+        body = self._read_json_body()
+        target = str(body.get("target", ""))
+        if not target:
+            self._err(400, "target 必填")
+            return
+        from proxymgr import _normalize_target
+        if _normalize_target(target) is None:
+            self._err(400, f"目标地址非法（需 http:// 或 https:// 前缀）: {target}")
+            return
+        if not Handler.pool.add(target):
+            self._err(409, f"目标已在池中: {target}")
+            return
+        self._ok({"ok": True, "targets": list(Handler.pool.targets)})
+
+    def _api_proxy_pool_remove(self) -> None:
+        body = self._read_json_body()
+        target = str(body.get("target", ""))
+        if not target:
+            self._err(400, "target 必填")
+            return
+        if not Handler.pool.remove(target):
+            self._err(404, f"目标不在池中: {target}")
+            return
+        self._ok({"ok": True, "targets": list(Handler.pool.targets)})
 
     def _api_proxies_targets(self) -> None:
         pm = self._proxy_manager()
@@ -771,6 +862,7 @@ def main() -> int:
     data_dirs = ensure_data_dirs()
     Handler.data_dirs = data_dirs
     Handler.settings = SettingsStore(data_dirs["root"])
+    Handler.pool = TargetPoolStore(data_dirs["root"])
 
     nginx_path = args.nginx_path or Handler.settings.get("nginxPath")
     conf_dir = args.conf_dir or Handler.settings.get("confDir")
