@@ -18,3 +18,7 @@ tests/*.html
 
 # 本地测试用 nginx（不入库）
 nginx-1.30.4/
+
+# IDE
+.idea/
+.vscode/

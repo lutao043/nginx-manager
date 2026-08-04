@@ -93,12 +93,15 @@ def parse_proxies(content: str) -> List[ProxyBlock]:
 # ---------- 修改操作 ----------
 
 def _normalize_target(target: str) -> Optional[str]:
+    """校验目标地址（新增/编辑备选时使用，须为 nginx 合法 proxy_pass 参数）。
+    注意：裸 ip:port（无 http://）不是合法 proxy_pass，注释里历史遗留的
+    裸地址可以显示/尝试切换，但会被 nginx -t 拦截并回滚。"""
     t = target.strip()
-    if not t or re.search(r"\s", t):
+    if not t or re.search(r"\s", t) or "{" in t or "}" in t:
         return None
-    if not (t.startswith("http://") or t.startswith("https://") or t.startswith("unix:")):
-        return None
-    return t
+    if t.startswith(("http://", "https://", "unix:")):
+        return t
+    return None
 
 
 def _normalize_path(path: str) -> Optional[str]:
@@ -137,14 +140,17 @@ def _render_targets(lines: List[str], block: ProxyBlock, targets: List[str]) -> 
     if active_url not in targets:
         active_url = targets[0]
 
-    # 删除块内所有旧 proxy_pass 行，换成新行
+    # 删除块内所有旧 proxy_pass 行，换成新行（沿用块内原 proxy_pass 行的缩进）
     new_lines = []
     inserted = False
-    insert_pos = None
+    indent = "    "
+    if block.pp_lines:
+        m = PROXY_PASS_RE.match(lines[block.pp_lines[0]])
+        if m and m.group(1):
+            indent = m.group(1)
     for j in range(block.start, block.end + 1):
         if j in block.pp_lines:
             if not inserted:
-                indent = "    "
                 for url in targets:
                     commented = "#" if url != active_url else ""
                     new_lines.append(f"{indent}{commented}proxy_pass {url};")
@@ -219,6 +225,9 @@ class ProxyManager:
         self.reload()
         out = []
         for b in self.blocks:
+            # 无激活 proxy_pass 的块（如 alias 静态目录）不是代理，跳过
+            if b.active is None:
+                continue
             out.append({
                 "path": b.path,
                 "active": b.active,
@@ -256,9 +265,11 @@ class ProxyManager:
         return {"ok": True, "proxy": {"path": path, "active": target, "targets": [target], "proxyHeaders": True}}
 
     def switch(self, path: str, target: str) -> dict:
-        target = _normalize_target(target)
+        """切换激活目标。target 必须已是该代理备选列表中的值（含历史遗留的
+        裸地址）；写入后由调用方 nginx -t 校验，失败自动回滚。"""
+        target = target.strip()
         if not target:
-            return {"ok": False, "error": "target 非法"}
+            return {"ok": False, "error": "target 不能为空"}
         self._refresh()
         lines = self.content.split("\n")
         block = next((b for b in self.blocks if b.path == path), None)

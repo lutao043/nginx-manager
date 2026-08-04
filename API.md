@@ -292,7 +292,12 @@
 - 一个代理 = 一个 `location <path> { ... }` 块，块内含 `proxy_pass <url>;`。
 - 激活目标：块内**唯一未注释**的 `proxy_pass` 行。
 - 备选目标：块内 `#proxy_pass <url>;` 注释行（切换 = 互换激活行与目标行的注释状态）。
+- 兼容 `^~` / `~` / `~*` / `=` 等 location 修饰符（`path` 为去掉修饰符后的路径）。
+- 兼容历史遗留的裸地址备选（如 `# proxy_pass 10.1.2.3:8080;` 无 `http://` 前缀）：
+  可显示/可尝试切换，但 nginx 不认裸地址，`nginx -t` 会拦截并回滚（提示补 `http://`）。
+- **不含激活 proxy_pass 的块**（如 `alias` 静态目录）不进入代理列表。
 - 本工具只识别**包含 proxy_pass 指令**的 location 块；静态资源/其他 location 不进入代理列表。
+- 切换/更新仅改变 proxy_pass 行的注释状态与缩进，**不重排块内其他指令**。
 
 ### GET /api/proxies
 
