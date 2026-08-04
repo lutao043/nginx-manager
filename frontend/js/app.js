@@ -63,6 +63,26 @@ const App = (() => {
     // 备份/日志
     $("#btnRefreshBackups").addEventListener("click", loadBackups);
     $("#btnRefreshLog").addEventListener("click", loadErrorLog);
+    // 页签
+    $("#tabConfig").addEventListener("click", () => switchTab("config"));
+    $("#tabProxies").addEventListener("click", () => switchTab("proxies"));
+    // 代理
+    $("#btnRefreshProxies").addEventListener("click", loadProxies);
+    $("#btnAddProxy").addEventListener("click", openAddProxy);
+    $("#btnConfirmAddProxy").addEventListener("click", confirmAddProxy);
+    $("#btnSaveTargets").addEventListener("click", saveTargets);
+    bindModalClose("#addProxyModal");
+    bindModalClose("#editTargetsModal");
+  }
+
+  /* ---------- 页签切换 ---------- */
+  function switchTab(name) {
+    const isConfig = name === "config";
+    $("#tabConfig").classList.toggle("active", isConfig);
+    $("#tabProxies").classList.toggle("active", !isConfig);
+    $("#viewConfig").hidden = !isConfig;
+    $("#viewProxies").hidden = isConfig;
+    if (!isConfig) loadProxies();
   }
 
   /* ---------- 向导保存 ---------- */
@@ -371,6 +391,224 @@ const App = (() => {
       $("#errorLog").textContent = data.content || "（错误日志为空或文件不存在）";
     } catch (e) {
       toast(e.message, "error");
+    }
+  }
+
+  /* ---------- 代理管理 ---------- */
+  async function loadProxies() {
+    try {
+      const data = await api.proxies();
+      renderProxyList(data.proxies || []);
+    } catch (e) {
+      $("#proxyList").innerHTML = '<p class="muted">加载失败：' + escapeHtml(e.message) + "</p>";
+    }
+  }
+
+  function showProxyTest(test) {
+    const el = $("#proxyTestResult");
+    if (!test) { el.hidden = true; return; }
+    el.textContent = test.output || "";
+    el.className = "test-result " + (test.ok ? "ok" : "fail");
+    el.hidden = false;
+  }
+
+  function renderProxyList(proxies) {
+    const list = $("#proxyList");
+    if (!proxies.length) {
+      list.innerHTML = '<p class="muted">暂无代理，点击「添加代理」创建</p>';
+      return;
+    }
+    list.innerHTML = "";
+    proxies.forEach((p) => {
+      const item = document.createElement("div");
+      item.className = "proxy-item";
+
+      const head = document.createElement("div");
+      head.className = "proxy-item-head";
+      const path = document.createElement("span");
+      path.className = "proxy-path";
+      path.textContent = p.path;
+      const active = document.createElement("span");
+      active.className = "proxy-active";
+      active.textContent = "当前 → " + p.active;
+      head.appendChild(path);
+      head.appendChild(active);
+
+      const row = document.createElement("div");
+      row.className = "proxy-item-row";
+      const select = document.createElement("select");
+      (p.targets || []).forEach((t) => {
+        const opt = document.createElement("option");
+        opt.value = t;
+        opt.textContent = t + (t === p.active ? "（当前）" : "");
+        if (t === p.active) opt.selected = true;
+        select.appendChild(opt);
+      });
+      const btnSwitch = document.createElement("button");
+      btnSwitch.className = "btn btn-primary btn-mini";
+      btnSwitch.textContent = "切换";
+      btnSwitch.addEventListener("click", () => doSwitchProxy(p, select.value));
+
+      const btnEdit = document.createElement("button");
+      btnEdit.className = "btn btn-mini";
+      btnEdit.textContent = "编辑备选";
+      btnEdit.addEventListener("click", () => openEditTargets(p));
+
+      const btnDel = document.createElement("button");
+      btnDel.className = "btn btn-mini";
+      btnDel.textContent = "删除";
+      btnDel.addEventListener("click", () => doRemoveProxy(p));
+
+      const actions = document.createElement("div");
+      actions.className = "proxy-item-actions";
+      actions.appendChild(btnSwitch);
+      actions.appendChild(btnEdit);
+      actions.appendChild(btnDel);
+
+      row.appendChild(select);
+      row.appendChild(actions);
+
+      item.appendChild(head);
+      item.appendChild(row);
+      list.appendChild(item);
+    });
+  }
+
+  async function doSwitchProxy(p, target) {
+    if (!target || target === p.active) return;
+    const ok = await confirmDialog("将代理 " + p.path + " 切换到 " + target + "？\n将自动备份并校验配置。");
+    if (!ok) return;
+    try {
+      const res = await api.switchProxy(p.path, target);
+      showProxyTest(res.test);
+      toast("已切换: " + p.path + " → " + target, "success");
+      loadProxies();
+      refreshStatus();
+    } catch (e) {
+      showProxyTest(e.payload && e.payload.test);
+      toast(e.message, "error");
+    }
+  }
+
+  async function doRemoveProxy(p) {
+    const ok = await confirmDialog("删除代理 " + p.path + "？\n将移除整个 location 块并校验配置。");
+    if (!ok) return;
+    try {
+      const res = await api.removeProxy(p.path);
+      showProxyTest(res.test);
+      toast("已删除代理: " + p.path, "success");
+      loadProxies();
+      refreshStatus();
+    } catch (e) {
+      showProxyTest(e.payload && e.payload.test);
+      toast(e.message, "error");
+    }
+  }
+
+  /* 添加代理弹窗 */
+  function openAddProxy() {
+    $("#addProxyPath").value = "";
+    $("#addProxyTarget").value = "";
+    $("#addProxyError").hidden = true;
+    lockBody();
+    openModal("#addProxyModal");
+  }
+
+  async function confirmAddProxy() {
+    const path = $("#addProxyPath").value.trim();
+    const target = $("#addProxyTarget").value.trim();
+    if (!path || !target) {
+      showAddProxyError("路径与目标地址均必填");
+      return;
+    }
+    try {
+      const res = await api.addProxy(path, target);
+      closeModal("#addProxyModal");
+      unlockBody();
+      showProxyTest(res.test);
+      toast("已添加代理: " + path, "success");
+      loadProxies();
+      refreshStatus();
+    } catch (e) {
+      showAddProxyError(e.message);
+    }
+  }
+
+  function showAddProxyError(msg) {
+    const el = $("#addProxyError");
+    el.textContent = msg;
+    el.hidden = false;
+  }
+
+  /* 编辑备选弹窗 */
+  let editingProxy = null;
+
+  function openEditTargets(p) {
+    editingProxy = p;
+    $("#editTargetsTitle").textContent = "编辑备选目标 — " + p.path;
+    const list = $("#editTargetsList");
+    list.innerHTML = "";
+    (p.targets || []).forEach((t, i) => {
+      list.appendChild(buildTargetRow(t, t === p.active, i === 0));
+    });
+    $("#editTargetsError").hidden = true;
+    lockBody();
+    openModal("#editTargetsModal");
+  }
+
+  function buildTargetRow(value, isActive, isFirst) {
+    const row = document.createElement("div");
+    row.className = "targets-edit-row";
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "activeTarget";
+    radio.checked = !!isActive;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = value;
+    input.placeholder = "http://host:port/";
+    const del = document.createElement("button");
+    del.className = "btn-remove-row";
+    del.type = "button";
+    del.textContent = "×";
+    del.title = "删除此行";
+    del.addEventListener("click", () => row.remove());
+    row.appendChild(radio);
+    row.appendChild(input);
+    row.appendChild(del);
+    return row;
+  }
+
+  async function saveTargets() {
+    if (!editingProxy) return;
+    const rows = Array.from($$("#editTargetsList .targets-edit-row"));
+    const targets = [];
+    let activeIdx = 0;
+    rows.forEach((row, i) => {
+      const input = row.querySelector('input[type="text"]');
+      const radio = row.querySelector('input[type="radio"]');
+      const val = (input.value || "").trim();
+      if (val && !targets.includes(val)) {
+        targets.push(val);
+        if (radio.checked) activeIdx = targets.indexOf(val);
+      }
+    });
+    if (!targets.length) {
+      $("#editTargetsError").textContent = "至少保留一个目标地址";
+      $("#editTargetsError").hidden = false;
+      return;
+    }
+    try {
+      const res = await api.saveProxyTargets(editingProxy.path, targets);
+      closeModal("#editTargetsModal");
+      unlockBody();
+      showProxyTest(res.test);
+      toast("已更新备选目标", "success");
+      loadProxies();
+      refreshStatus();
+    } catch (e) {
+      $("#editTargetsError").textContent = e.message;
+      $("#editTargetsError").hidden = false;
     }
   }
 

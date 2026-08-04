@@ -47,6 +47,14 @@
     <!-- 主界面 -->
     <div id="dashboard" class="dashboard" hidden>
 
+      <!-- 页签 -->
+      <div class="tabs">
+        <button class="tab active" id="tabConfig" type="button">配置文件</button>
+        <button class="tab" id="tabProxies" type="button">代理管理</button>
+      </div>
+
+      <!-- 配置文件视图 -->
+      <div id="viewConfig" class="dashboard-body">
       <!-- 左侧：配置文件树 -->
       <aside class="sidebar">
         <div class="sidebar-head">
@@ -117,6 +125,71 @@
         </div>
 
       </section>
+      </div><!-- /viewConfig -->
+
+      <!-- 代理管理视图 -->
+      <div id="viewProxies" class="dashboard-body" hidden>
+        <section class="content">
+          <div class="panel">
+            <div class="panel-title-row">
+              <span class="panel-title">反向代理列表</span>
+              <div class="panel-actions">
+                <button id="btnRefreshProxies" class="btn btn-mini" type="button" title="刷新">↻</button>
+                <button id="btnAddProxy" class="btn btn-primary btn-mini" type="button">＋ 添加代理</button>
+              </div>
+            </div>
+            <div class="proxy-tip muted small">切换目标地址后自动备份并执行 nginx -t 校验，通过后生效</div>
+            <div id="proxyList" class="proxy-list"><p class="muted">加载中…</p></div>
+          </div>
+
+          <!-- 代理测试结果 -->
+          <div class="test-result" id="proxyTestResult" hidden></div>
+        </section>
+      </div><!-- /viewProxies -->
+    </div>
+  </div>
+
+  <!-- 添加代理弹窗 -->
+  <div class="modal-mask" id="addProxyModal" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <span class="panel-title">添加代理</span>
+        <button class="modal-close" type="button" aria-label="关闭" data-close>×</button>
+      </div>
+      <div class="modal-body">
+        <div class="wizard-field">
+          <label>路径前缀（如 /xxxxWeb）</label>
+          <input id="addProxyPath" type="text" placeholder="/xxxxWeb" autocomplete="off">
+        </div>
+        <div class="wizard-field">
+          <label>目标地址（如 http://192.168.1.10:8080/）</label>
+          <input id="addProxyTarget" type="text" placeholder="http://192.168.1.10:8080/" autocomplete="off">
+        </div>
+        <div class="wizard-error" id="addProxyError" hidden></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" type="button" data-close>取消</button>
+        <button class="btn btn-primary" id="btnConfirmAddProxy" type="button">添加</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 编辑备选目标弹窗 -->
+  <div class="modal-mask" id="editTargetsModal" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <span class="panel-title" id="editTargetsTitle">编辑备选目标</span>
+        <button class="modal-close" type="button" aria-label="关闭" data-close>×</button>
+      </div>
+      <div class="modal-body">
+        <p class="wizard-tip">每行一个目标地址；勾选「激活」的在切换后生效。</p>
+        <div id="editTargetsList" class="targets-edit-list"></div>
+        <div class="wizard-error" id="editTargetsError" hidden></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" type="button" data-close>取消</button>
+        <button class="btn btn-primary" id="btnSaveTargets" type="button">保存</button>
+      </div>
     </div>
   </div>
 

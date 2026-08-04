@@ -61,6 +61,13 @@ const api = {
   errorLog(lines) { return this.get("/api/logs/error?lines=" + (lines || 200)); },
   settings() { return this.get("/api/settings"); },
   saveSettings(nginxPath, confDir) { return this.put("/api/settings", { nginxPath, confDir }); },
+
+  // ---- 代理管理 ----
+  proxies() { return this.get("/api/proxies"); },
+  addProxy(path, target) { return this.post("/api/proxies", { path, target }); },
+  switchProxy(path, target) { return this.put("/api/proxies/switch", { path, target }); },
+  saveProxyTargets(path, targets) { return this.put("/api/proxies/targets", { path, targets }); },
+  removeProxy(path) { return this._request("DELETE", "/api/proxies", { path }); },
 };
 
 /* 简易 XSS 转义：用户数据插入 innerHTML 前必须过此函数 */

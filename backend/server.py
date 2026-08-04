@@ -30,6 +30,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from nginxctl import NginxController, create_controller
+from proxymgr import ProxyManager
 
 APP_NAME = "nginx-manager"
 IS_FROZEN = getattr(sys, "frozen", False)
@@ -290,6 +291,10 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         self._route_api_put(parsed.path)
 
+    def do_DELETE(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        self._route_api_delete(parsed.path)
+
     # ---- API: GET ----
 
     def _route_api_get(self, path: str, qs: dict) -> None:
@@ -303,6 +308,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_backups()
         elif path == "/api/logs/error":
             self._api_logs_error(qs)
+        elif path == "/api/proxies":
+            self._api_proxies_get()
         elif path == "/api/settings":
             self._api_settings_get()
         else:
@@ -395,6 +402,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_config_test()
         elif path == "/api/backups/restore":
             self._api_backups_restore()
+        elif path == "/api/proxies":
+            self._api_proxies_add()
         else:
             self._err(404, "接口不存在")
 
@@ -520,6 +529,18 @@ class Handler(BaseHTTPRequestHandler):
             self._api_config_file_put()
         elif path == "/api/settings":
             self._api_settings_put()
+        elif path == "/api/proxies/switch":
+            self._api_proxies_switch()
+        elif path == "/api/proxies/targets":
+            self._api_proxies_targets()
+        else:
+            self._err(404, "接口不存在")
+
+    # ---- API: DELETE ----
+
+    def _route_api_delete(self, path: str) -> None:
+        if path == "/api/proxies":
+            self._api_proxies_remove()
         else:
             self._err(404, "接口不存在")
 
@@ -585,6 +606,124 @@ class Handler(BaseHTTPRequestHandler):
         self.settings.set("confDir", conf_dir)
         Handler.controller = create_controller(nginx_path, conf_dir)
         self._ok({"ok": True, "nginxPath": nginx_path, "confDir": conf_dir})
+
+    # ---- 代理管理 ----
+
+    def _proxy_manager(self):
+        """构造 ProxyManager（锁定 nginx.conf）；未配置时返回 None 并已回错误。"""
+        ctl = self._require_controller()
+        if ctl is None:
+            return None
+        conf_path = ctl.main_conf_path()
+        if not os.path.isfile(conf_path):
+            self._err(409, f"主配置文件不存在: {conf_path}")
+            return None
+        return ProxyManager(conf_path)
+
+    def _proxy_test_or_rollback(self, pm, original, proxy_payload=None):
+        """执行 nginx -t；失败则恢复原文并返回错误响应。成功返回 None（继续走 _ok）。"""
+        code, result = self.controller.test_config()
+        if not result.get("ok"):
+            pm.restore(original)
+            self._send_json(409, {
+                "error": "修改后 nginx -t 校验失败，已回滚（配置未改动）",
+                "detail": result.get("output", ""),
+                "test": result,
+            })
+            return None
+        return result
+
+    def _api_proxies_get(self) -> None:
+        pm = self._proxy_manager()
+        if pm is None:
+            return
+        self._ok({"proxies": pm.list_proxies(), "sourceFile": os.path.basename(pm.conf_path)})
+
+    def _api_proxies_add(self) -> None:
+        pm = self._proxy_manager()
+        if pm is None:
+            return
+        body = self._read_json_body()
+        path = str(body.get("path", ""))
+        target = str(body.get("target", ""))
+        original = pm.content
+        # 修改前先备份原始配置
+        backup_id = make_backup(self.data_dirs["backups"], self.controller.conf_dir, "nginx.conf")
+        res = pm.add(path, target)
+        if not res.get("ok"):
+            self._err(400, res.get("error", "添加代理失败"))
+            return
+        pm.commit()
+        test = self._proxy_test_or_rollback(pm, original)
+        if test is None:
+            return
+        self._ok({"ok": True, "proxy": res["proxy"], "backupId": backup_id, "test": test})
+
+    def _api_proxies_switch(self) -> None:
+        pm = self._proxy_manager()
+        if pm is None:
+            return
+        body = self._read_json_body()
+        path = str(body.get("path", ""))
+        target = str(body.get("target", ""))
+        original = pm.content
+        backup_id = make_backup(self.data_dirs["backups"], self.controller.conf_dir, "nginx.conf")
+        res = pm.switch(path, target)
+        if not res.get("ok"):
+            err = res.get("error", "")
+            status = 404 if "不存在" in err else (409 if "备选" in err else 400)
+            self._err(status, err)
+            return
+        pm.commit()
+        test = self._proxy_test_or_rollback(pm, original)
+        if test is None:
+            return
+        proxy = next((p for p in pm.list_proxies() if p["path"] == path), None)
+        self._ok({"ok": True, "proxy": proxy, "backupId": backup_id, "test": test})
+
+    def _api_proxies_targets(self) -> None:
+        pm = self._proxy_manager()
+        if pm is None:
+            return
+        body = self._read_json_body()
+        path = str(body.get("path", ""))
+        targets = body.get("targets")
+        if not isinstance(targets, list):
+            self._err(400, "targets 必须为数组")
+            return
+        original = pm.content
+        backup_id = make_backup(self.data_dirs["backups"], self.controller.conf_dir, "nginx.conf")
+        res = pm.update_targets(path, targets)
+        if not res.get("ok"):
+            err = res.get("error", "")
+            status = 404 if "不存在" in err else 400
+            self._err(status, err)
+            return
+        pm.commit()
+        test = self._proxy_test_or_rollback(pm, original)
+        if test is None:
+            return
+        proxy = next((p for p in pm.list_proxies() if p["path"] == path), None)
+        self._ok({"ok": True, "proxy": proxy, "backupId": backup_id, "test": test})
+
+    def _api_proxies_remove(self) -> None:
+        pm = self._proxy_manager()
+        if pm is None:
+            return
+        body = self._read_json_body()
+        path = str(body.get("path", ""))
+        original = pm.content
+        backup_id = make_backup(self.data_dirs["backups"], self.controller.conf_dir, "nginx.conf")
+        res = pm.remove(path)
+        if not res.get("ok"):
+            err = res.get("error", "")
+            self._err(404 if "不存在" in err else 400, err)
+            return
+        pm.commit()
+        test = self._proxy_test_or_rollback(pm, original)
+        if test is None:
+            return
+        self._ok({"ok": True, "deleted": path, "backupId": backup_id, "test": test})
 
     # ---- 日志 ----
 

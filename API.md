@@ -277,6 +277,125 @@
 - `400`：字段缺失。
 - `409`：`nginxPath` 不存在或 `nginx -v` 无法执行。
 
+## 代理管理（proxies）
+
+### ProxyInfo（代理条目模型）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| path | string | location 路径前缀（如 `/xxxxWeb`） |
+| active | string | 当前激活目标地址（proxy_pass 未注释行的值） |
+| targets | string[] | 全部备选目标地址（激活 + 注释备选，按配置顺序） |
+| proxyHeaders | boolean | 是否包含标准三行 proxy_set_header 样板 |
+
+**配置文件表示约定**（唯一权威，nginx 原生语法兼容）：
+- 一个代理 = 一个 `location <path> { ... }` 块，块内含 `proxy_pass <url>;`。
+- 激活目标：块内**唯一未注释**的 `proxy_pass` 行。
+- 备选目标：块内 `#proxy_pass <url>;` 注释行（切换 = 互换激活行与目标行的注释状态）。
+- 本工具只识别**包含 proxy_pass 指令**的 location 块；静态资源/其他 location 不进入代理列表。
+
+### GET /api/proxies
+
+返回所有代理条目（按配置文件出现顺序）。
+
+**成功响应 200**
+
+```json
+{
+  "proxies": [
+    { "path": "/nginx-manager/", "active": "http://127.0.0.1:8310/", "targets": ["http://127.0.0.1:8310/"], "proxyHeaders": true }
+  ],
+  "sourceFile": "nginx.conf"
+}
+```
+
+- `sourceFile`：解析来源文件路径（相对配置目录）。
+
+### POST /api/proxies
+
+添加新代理。在配置文件末尾的 server 块内追加 `location` 块（标准样板：proxy_pass + 三行 proxy_set_header）。添加后执行 `nginx -t` 校验。
+
+**请求体**
+
+```json
+{ "path": "/xxxxWeb", "target": "http://192.168.1.10:8080/" }
+```
+
+**成功响应 200**
+
+```json
+{ "ok": true, "proxy": { "path": "/xxxxWeb", "active": "http://192.168.1.10:8080/", "targets": ["http://192.168.1.10:8080/"], "proxyHeaders": true }, "test": { "ok": true, "output": "..." } }
+```
+
+**错误**
+- `400`：path/target 缺失、path 非法（必须以 `/` 开头、不含空白）。
+- `409`：path 已存在（重复代理）。
+- `409`：添加后 `nginx -t` 校验失败（已回滚写入，配置未改动）。
+
+### PUT /api/proxies/switch
+
+切换某代理的激活目标。修改配置文件 + 自动备份 + `nginx -t` 校验，校验失败回滚。
+
+**请求体**
+
+```json
+{ "path": "/xxxxWeb", "target": "http://192.168.1.11:8080/" }
+```
+
+**成功响应 200**
+
+```json
+{ "ok": true, "proxy": { "path": "/xxxxWeb", "active": "http://192.168.1.11:8080/", "targets": ["http://192.168.1.10:8080/", "http://192.168.1.11:8080/"], "proxyHeaders": true }, "test": { "ok": true, "output": "..." } }
+```
+
+**错误**
+- `400`：path/target 缺失。
+- `404`：path 对应的代理不存在。
+- `409`：target 不在该代理的 targets 列表中。
+- `409`：校验失败（已回滚）。
+
+### PUT /api/proxies/targets
+
+更新某代理的备选目标列表（增删备选，激活目标不变；若移除当前激活目标则自动切换到列表第一个）。修改后自动备份 + 校验。
+
+**请求体**
+
+```json
+{ "path": "/xxxxWeb", "targets": ["http://192.168.1.10:8080/", "http://192.168.1.11:8080/", "http://192.168.1.12:8080/"] }
+```
+
+**成功响应 200**
+
+```json
+{ "ok": true, "proxy": { "path": "/xxxxWeb", "active": "...", "targets": ["..."], "proxyHeaders": true }, "test": { "ok": true, "output": "..." } }
+```
+
+**错误**
+- `400`：path/targets 缺失、targets 为空或含非法 URL。
+- `404`：path 对应的代理不存在。
+- `409`：校验失败（已回滚）。
+
+### DELETE /api/proxies
+
+删除代理（移除整个 location 块）。修改后自动备份 + 校验，失败回滚。
+
+**请求体**
+
+```json
+{ "path": "/xxxxWeb" }
+```
+
+**成功响应 200**
+
+```json
+{ "ok": true, "deleted": "/xxxxWeb", "test": { "ok": true, "output": "..." } }
+```
+
+**错误**
+- `400`：path 缺失。
+- `404`：path 对应的代理不存在。
+- `409`：校验失败（已回滚）。
+
 ## 前端行为约定
 
 - 所有写操作（保存/启停/回滚）在弹确认框后进行；保存、回滚前前端提示「将自动备份原文件」。
