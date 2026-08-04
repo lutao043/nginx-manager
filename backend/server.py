@@ -7,7 +7,8 @@
 特性：
   - 仅监听 127.0.0.1
   - 端口 --port 指定，缺省随机空闲端口（启动时打印实际地址并尝试打开浏览器）
-  - 首次使用（settings 未配置且未传参数）：弹系统文件选择对话框让用户指定
+  - 本地开发默认：若工作区根目录存在 nginx-1.30.4/（测试用 nginx），直接作为管理对象；
+    否则首次使用（settings 未配置且未传参数）弹系统文件选择对话框让用户指定
     nginx 程序路径与配置目录（tkinter，打包 exe 内可用）；无图形环境时可
     用 --nginx-path / --conf-dir 参数预置，或用 API 配置。
   - 运行时数据存用户数据目录（Windows %APPDATA%，macOS ~/Library/Application
@@ -608,6 +609,16 @@ def find_free_port(preferred: int | None) -> int:
 
 # ---------- 入口 ----------
 
+def find_workspace_nginx() -> dict:
+    """开发默认：若工作区根目录存在 nginx-1.30.4/（标准 Windows 版布局），
+    直接作为管理对象，跳过首次对话框。返回 {nginxPath, confDir} 或空 dict。"""
+    exe = os.path.join(PROJECT_ROOT, "nginx-1.30.4", "nginx.exe")
+    conf_dir = os.path.join(PROJECT_ROOT, "nginx-1.30.4", "conf")
+    if os.path.isfile(exe) and os.path.isfile(os.path.join(conf_dir, "nginx.conf")):
+        return {"nginxPath": exe, "confDir": conf_dir}
+    return {}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="nginx 轻量网页管理端")
     parser.add_argument("--port", type=int, default=None, help="监听端口（缺省随机空闲端口）")
@@ -623,16 +634,24 @@ def main() -> int:
     conf_dir = args.conf_dir or Handler.settings.get("confDir")
 
     if not nginx_path or not conf_dir:
-        print("[首次使用] 需要指定 nginx 路径与配置目录…")
-        picked = pick_nginx_via_dialog()
-        if not picked:
-            print("未完成选择，退出。可用 --nginx-path / --conf-dir 参数指定，或重试。")
-            return 1
-        nginx_path = picked["nginxPath"]
-        conf_dir = picked["confDir"]
-        Handler.settings.set("nginxPath", nginx_path)
-        Handler.settings.set("confDir", conf_dir)
-        print(f"已保存配置: nginx={nginx_path}\n            confDir={conf_dir}")
+        # 开发默认：工作区自带 nginx-1.30.4（测试用）
+        ws = find_workspace_nginx()
+        if ws:
+            nginx_path = ws["nginxPath"]
+            conf_dir = ws["confDir"]
+            print(f"[默认] 使用工作区 nginx: {nginx_path}")
+            print(f"      confDir: {conf_dir}")
+        else:
+            print("[首次使用] 需要指定 nginx 路径与配置目录…")
+            picked = pick_nginx_via_dialog()
+            if not picked:
+                print("未完成选择，退出。可用 --nginx-path / --conf-dir 参数指定，或重试。")
+                return 1
+            nginx_path = picked["nginxPath"]
+            conf_dir = picked["confDir"]
+            Handler.settings.set("nginxPath", nginx_path)
+            Handler.settings.set("confDir", conf_dir)
+            print(f"已保存配置: nginx={nginx_path}\n            confDir={conf_dir}")
 
     Handler.controller = create_controller(nginx_path, conf_dir)
     port = find_free_port(args.port)

@@ -60,12 +60,18 @@
 ## 启动 / 构建命令
 
 ```bash
-# 开发启动（首次会弹选择窗口）
+# 开发启动（工作区存在 nginx-1.30.4/ 时默认直接管理它；否则弹选择窗口）
 python backend/server.py --port 8080
 
-# 跳过首次对话框（已配置或用 CLI 指定）
+# 指定 nginx（跳过默认/对话框）
 python backend/server.py --nginx-path C:/nginx/nginx.exe --conf-dir C:/nginx/conf
 
 # 打包单文件 exe
 python build.py          # 产物 dist/nginx-manager.exe
 ```
+
+## 本地测试用 nginx
+
+- 工作区根目录 `nginx-1.30.4/` 为本地测试用 nginx（Windows 官方版，含 nginx.exe + conf/）。
+- 开发模式启动时自动识别并作为默认管理对象（见 `server.py::find_workspace_nginx`）。
+- **该目录已在 .gitignore 中排除，不入库**；仅用于本地功能验证。
