@@ -98,7 +98,8 @@ class SettingsStore:
 
 class TargetPoolStore:
     """目标地址池持久化。文件：<user_data>/targets.json
-    统一管理常用 proxy_pass 目标地址，供各代理下拉切换复用。"""
+    统一管理常用 proxy_pass 目标地址，供各代理下拉切换复用。
+    条目结构：[{"target": "http://...", "alias": "..."}]；兼容旧版纯字符串列表。"""
 
     def __init__(self, root: str):
         self.path = os.path.join(root, "targets.json")
@@ -110,7 +111,13 @@ class TargetPoolStore:
                 with open(self.path, "r", encoding="utf-8") as f:
                     d = json.load(f)
                 if isinstance(d, list):
-                    return [str(t) for t in d]
+                    out = []
+                    for item in d:
+                        if isinstance(item, str):
+                            out.append({"target": item, "alias": ""})  # 旧版迁移
+                        elif isinstance(item, dict) and item.get("target"):
+                            out.append({"target": str(item["target"]), "alias": str(item.get("alias") or "")})
+                    return out
             except (json.JSONDecodeError, OSError):
                 pass
         return []
@@ -119,19 +126,34 @@ class TargetPoolStore:
         with open(self.path, "w", encoding="utf-8") as f:
             json.dump(self.targets, f, ensure_ascii=False, indent=2)
 
-    def add(self, target: str) -> bool:
+    def get(self, target: str) -> dict | None:
+        for item in self.targets:
+            if item["target"] == target:
+                return item
+        return None
+
+    def add(self, target: str, alias: str = "") -> bool:
         target = target.strip()
-        if not target or target in self.targets:
+        if not target or self.get(target):
             return False
-        self.targets.append(target)
+        self.targets.append({"target": target, "alias": alias.strip()})
+        self.save()
+        return True
+
+    def set_alias(self, target: str, alias: str) -> bool:
+        item = self.get(target.strip())
+        if item is None:
+            return False
+        item["alias"] = alias.strip()
         self.save()
         return True
 
     def remove(self, target: str) -> bool:
         target = target.strip()
-        if target not in self.targets:
+        item = self.get(target)
+        if item is None:
             return False
-        self.targets.remove(target)
+        self.targets.remove(item)
         self.save()
         return True
 
@@ -578,6 +600,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_proxies_switch()
         elif path == "/api/proxies/targets":
             self._api_proxies_targets()
+        elif path == "/api/proxy-pool":
+            self._api_proxy_pool_put()
         else:
             self._err(404, "接口不存在")
 
@@ -599,6 +623,7 @@ class Handler(BaseHTTPRequestHandler):
         rel = self._safe_rel(str(body.get("path", "")))
         content = body.get("content")
         run_test = body.get("runTest", True)
+        do_backup = bool(body.get("doBackup", False))  # 显式确认才备份，默认不备份
         if rel is None:
             self._err(400, "path 参数非法")
             return
@@ -613,7 +638,9 @@ class Handler(BaseHTTPRequestHandler):
             self._err(404, "目标文件不存在，不允许新建文件")
             return
 
-        backup_id = make_backup(self.data_dirs["backups"], ctl.conf_dir, rel)
+        backup_id = None
+        if do_backup:
+            backup_id = make_backup(self.data_dirs["backups"], ctl.conf_dir, rel)
         try:
             with open(abs_path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(content)
@@ -629,12 +656,13 @@ class Handler(BaseHTTPRequestHandler):
                     "detail": result.get("output", ""),
                     "saved": True,
                     "backupId": backup_id,
+                    "backedUp": do_backup,
                     "test": result,
                 })
                 return
-            self._ok({"ok": True, "backupId": backup_id, "test": result})
+            self._ok({"ok": True, "backupId": backup_id, "backedUp": do_backup, "test": result})
         else:
-            self._ok({"ok": True, "backupId": backup_id})
+            self._ok({"ok": True, "backupId": backup_id, "backedUp": do_backup})
 
     def _api_settings_put(self) -> None:
         body = self._read_json_body()
@@ -749,15 +777,28 @@ class Handler(BaseHTTPRequestHandler):
     def _api_proxy_pool_add(self) -> None:
         body = self._read_json_body()
         target = str(body.get("target", ""))
+        alias = str(body.get("alias", ""))
         if not target:
             self._err(400, "target 必填")
             return
         from proxymgr import _normalize_target
         if _normalize_target(target) is None:
-            self._err(400, f"目标地址非法（需 http:// 或 https:// 前缀）: {target}")
+            self._err(400, f"目标地址不符合 URL 规则（需 http:// 或 https:// 或 unix:/ 前缀）: {target}")
             return
-        if not Handler.pool.add(target):
+        if not Handler.pool.add(target, alias):
             self._err(409, f"目标已在池中: {target}")
+            return
+        self._ok({"ok": True, "targets": list(Handler.pool.targets)})
+
+    def _api_proxy_pool_put(self) -> None:
+        body = self._read_json_body()
+        target = str(body.get("target", ""))
+        alias = str(body.get("alias", ""))
+        if not target:
+            self._err(400, "target 必填")
+            return
+        if not Handler.pool.set_alias(target, alias):
+            self._err(404, f"目标不在池中: {target}")
             return
         self._ok({"ok": True, "targets": list(Handler.pool.targets)})
 

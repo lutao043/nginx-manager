@@ -73,10 +73,21 @@ const App = (() => {
     $("#btnSaveTargets").addEventListener("click", saveTargets);
     // 目标地址池
     $("#btnAddPoolTarget").addEventListener("click", openAddPool);
-    $("#btnConfirmAddPool").addEventListener("click", confirmAddPool);
+    $("#btnConfirmAddPool").addEventListener("click", () => {
+      if (editingPoolItem) savePoolAlias();
+      else confirmAddPool();
+    });
     bindModalClose("#addProxyModal");
     bindModalClose("#editTargetsModal");
-    bindModalClose("#addPoolModal");
+    bindModalClose("#addPoolModal", () => {
+      // 关闭池弹窗时重置编辑态
+      if (editingPoolItem) {
+        editingPoolItem = null;
+        $("#addPoolTarget").disabled = false;
+        $("#addPoolModal .modal-head .panel-title").textContent = "添加目标地址";
+        $("#btnConfirmAddPool").textContent = "添加";
+      }
+    });
   }
 
   /* ---------- 页签切换 ---------- */
@@ -262,26 +273,33 @@ const App = (() => {
 
   async function saveFile() {
     if (!currentFile) return;
-    const ok = await confirmDialog("保存将自动备份原文件，并执行 nginx -t 校验。确认保存？");
-    if (!ok) return;
+    const choice = await confirmChoice("保存修改？备份仅在你显式确认时执行。", [
+      { label: "保存并备份", value: "backup", primary: true },
+      { label: "仅保存", value: "save" },
+    ]);
+    if (!choice) return;
+    const doBackup = choice === "backup";
     const content = $("#editor").value;
     try {
-      const res = await api.saveFile(currentFile, content, true);
-      $("#editorMeta").textContent = "已保存，备份 " + (res.backupId || "");
+      const res = await api.saveFile(currentFile, content, true, doBackup);
+      $("#editorMeta").textContent = res.backedUp
+        ? "已保存，备份 " + (res.backupId || "")
+        : "已保存（未备份）";
       showTestResult(res.test);
       $("#saveWarning").hidden = true;
       editing = false;
-      toast("配置已保存", "success");
+      toast(res.backedUp ? "配置已保存并备份" : "配置已保存（未备份）", "success");
       loadBackups();
     } catch (e) {
       if (e.status === 409 && e.payload && e.payload.saved) {
         // 已保存但校验失败
         $("#saveWarning").hidden = false;
+        const backupLabel = e.payload.backupId ? "回滚到备份 " + e.payload.backupId : "回滚到备份";
         $("#saveWarning").innerHTML =
           "⚠ " + escapeHtml(e.message) +
-          '<div class="actions"><button class="btn btn-mini" id="btnRollback">回滚到备份 ' + escapeHtml(e.payload.backupId || "") + "</button></div>";
+          '<div class="actions"><button class="btn btn-mini" id="btnRollback">' + escapeHtml(backupLabel) + "</button></div>";
         const rb = $("#btnRollback");
-        if (rb) rb.addEventListener("click", () => rollbackFile(e.payload.backupId));
+        if (rb && e.payload.backupId) rb.addEventListener("click", () => rollbackFile(e.payload.backupId));
         showTestResult(e.payload.test);
         editing = false;
         toast("配置已保存，但校验失败", "error");
@@ -411,8 +429,21 @@ const App = (() => {
     }
   }
 
-  /* 目标地址池（模块内状态，加载后供下拉合并使用） */
+  /* 目标地址池（模块内状态，加载后供下拉合并使用）
+     条目结构: {target, alias} */
   let poolTargets = [];
+
+  function poolTargetList() { return poolTargets.map((p) => p.target); }
+
+  function poolAlias(target) {
+    const item = poolTargets.find((p) => p.target === target);
+    return item ? item.alias : "";
+  }
+
+  function poolLabel(target) {
+    const alias = poolAlias(target);
+    return alias ? alias + " (" + target + ")" : target;
+  }
 
   async function loadPool() {
     try {
@@ -432,21 +463,29 @@ const App = (() => {
       return;
     }
     list.innerHTML = "";
-    poolTargets.forEach((t) => {
-      const item = document.createElement("span");
-      item.className = "pool-item";
+    poolTargets.forEach((item) => {
+      const t = item.target;
+      const chip = document.createElement("span");
+      chip.className = "pool-item";
       const label = document.createElement("span");
-      label.textContent = t;
+      label.textContent = item.alias ? item.alias + " (" + t + ")" : t;
       label.title = t;
+      const editBtn = document.createElement("button");
+      editBtn.className = "pool-del";
+      editBtn.type = "button";
+      editBtn.textContent = "✎";
+      editBtn.title = "编辑别名";
+      editBtn.addEventListener("click", () => openEditPoolAlias(item));
       const del = document.createElement("button");
       del.className = "pool-del";
       del.type = "button";
       del.textContent = "×";
       del.title = "删除";
       del.addEventListener("click", () => doRemovePoolTarget(t));
-      item.appendChild(label);
-      item.appendChild(del);
-      list.appendChild(item);
+      chip.appendChild(label);
+      chip.appendChild(editBtn);
+      chip.appendChild(del);
+      list.appendChild(chip);
     });
   }
 
@@ -455,7 +494,7 @@ const App = (() => {
     if (!ok) return;
     try {
       await api.removePoolTarget(target);
-      poolTargets = poolTargets.filter((t) => t !== target);
+      poolTargets = poolTargets.filter((p) => p.target !== target);
       renderPoolList();
       loadProxies(); // 重新渲染下拉（去掉已删目标）
       toast("已从池删除: " + target, "success");
@@ -466,6 +505,7 @@ const App = (() => {
 
   function openAddPool() {
     $("#addPoolTarget").value = "";
+    $("#addPoolAlias").value = "";
     $("#addPoolError").hidden = true;
     lockBody();
     openModal("#addPoolModal");
@@ -473,19 +513,52 @@ const App = (() => {
 
   async function confirmAddPool() {
     const target = $("#addPoolTarget").value.trim();
+    const alias = $("#addPoolAlias").value.trim();
     if (!target) {
       $("#addPoolError").textContent = "目标地址必填";
       $("#addPoolError").hidden = false;
       return;
     }
     try {
-      const res = await api.addPoolTarget(target);
+      const res = await api.addPoolTarget(target, alias);
       closeModal("#addPoolModal");
       unlockBody();
       poolTargets = res.targets || [];
       renderPoolList();
       loadProxies();
-      toast("已添加目标: " + target, "success");
+      toast(alias ? "已添加目标: " + alias : "已添加目标: " + target, "success");
+    } catch (e) {
+      $("#addPoolError").textContent = e.message;
+      $("#addPoolError").hidden = false;
+    }
+  }
+
+  /* 编辑池条目别名 */
+  let editingPoolItem = null;
+
+  function openEditPoolAlias(item) {
+    editingPoolItem = item;
+    $("#addPoolTarget").value = item.target;
+    $("#addPoolTarget").disabled = true;
+    $("#addPoolAlias").value = item.alias || "";
+    $("#addPoolError").hidden = true;
+    $("#addPoolModal .modal-head .panel-title").textContent = "编辑别名 — " + item.target;
+    $("#btnConfirmAddPool").textContent = "保存";
+    lockBody();
+    openModal("#addPoolModal");
+  }
+
+  async function savePoolAlias() {
+    if (!editingPoolItem) return;
+    const alias = $("#addPoolAlias").value.trim();
+    try {
+      const res = await api.setPoolAlias(editingPoolItem.target, alias);
+      closeModal("#addPoolModal");
+      unlockBody();
+      poolTargets = res.targets || [];
+      renderPoolList();
+      loadProxies();
+      toast("别名已更新", "success");
     } catch (e) {
       $("#addPoolError").textContent = e.message;
       $("#addPoolError").hidden = false;
@@ -525,19 +598,21 @@ const App = (() => {
       const row = document.createElement("div");
       row.className = "proxy-item-row";
       const select = document.createElement("select");
-      // 下拉选项 = 目标池地址 ∪ 该代理已有地址（去重，保持顺序）
+      // 下拉选项 = 目标池地址 ∪ 该代理已有地址（去重，保持顺序）；池地址带别名显示
       const merged = [];
-      poolTargets.forEach((t) => { if (!merged.includes(t)) merged.push(t); });
+      poolTargets.forEach((pt) => { if (!merged.includes(pt.target)) merged.push(pt.target); });
       (p.targets || []).forEach((t) => { if (!merged.includes(t)) merged.push(t); });
       merged.forEach((t) => {
         const opt = document.createElement("option");
         opt.value = t;
         const inProxy = (p.targets || []).includes(t);
-        const inPool = poolTargets.includes(t);
+        const inPool = poolTargetList().includes(t);
+        const alias = poolAlias(t);
         const tags = [];
         if (t === p.active) tags.push("当前");
         if (!inProxy && inPool) tags.push("池");
-        opt.textContent = t + (tags.length ? "（" + tags.join("+") + "）" : "");
+        const display = alias ? alias + " (" + t + ")" : t;
+        opt.textContent = display + (tags.length ? "（" + tags.join("+") + "）" : "");
         if (t === p.active) opt.selected = true;
         select.appendChild(opt);
       });

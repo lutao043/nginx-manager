@@ -41,6 +41,54 @@ function confirmDialog(text) {
   });
 }
 
+/* 多选项确认弹窗：options = [{label, value, primary?}]，返回 Promise<value|null>
+   点遮罩/取消返回 null。用同一 confirmModal，动态重建按钮。 */
+function confirmChoice(text, options) {
+  return new Promise((resolve) => {
+    const mask = $("#confirmModal");
+    const foot = mask.querySelector(".modal-foot");
+    $("#confirmText").textContent = text;
+    // 清空旧的 yes/no 按钮，重建
+    foot.innerHTML = "";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.className = "btn";
+    cancelBtn.type = "button";
+    cancelBtn.textContent = "取消";
+    foot.appendChild(cancelBtn);
+
+    const done = (val) => {
+      mask.hidden = true;
+      foot.innerHTML = "";
+      // 还原默认按钮
+      const yes = document.createElement("button");
+      yes.className = "btn btn-primary";
+      yes.id = "btnConfirmYes";
+      yes.type = "button";
+      yes.textContent = "确认";
+      const no = document.createElement("button");
+      no.className = "btn";
+      no.id = "btnConfirmNo";
+      no.type = "button";
+      no.textContent = "取消";
+      foot.appendChild(no);
+      foot.appendChild(yes);
+      mask.removeEventListener("click", onMask);
+      resolve(val);
+    };
+    const onMask = (e) => { if (e.target === mask) done(null); };
+    cancelBtn.addEventListener("click", () => done(null));
+    options.forEach((opt) => {
+      const btn = document.createElement("button");
+      btn.className = "btn" + (opt.primary ? " btn-primary" : "");
+      btn.type = "button";
+      btn.textContent = opt.label;
+      btn.addEventListener("click", () => done(opt.value));
+      foot.appendChild(btn);
+    });
+    mask.addEventListener("click", onMask);
+  });
+}
+
 /* 打开设置弹窗 */
 function openModal(id) {
   const mask = $(id);

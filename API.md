@@ -100,15 +100,16 @@
 
 ### PUT /api/config/file
 
-保存配置文件。保存前自动备份原文件到 `backups/<时间戳>/`，然后写入新内容。
+保存配置文件。**默认不自动备份**；仅当 `doBackup=true` 时才备份原文件到 `backups/<时间戳>/`（由用户显式确认，避免每次保存都产生时间戳备份）。
 
 **请求体**
 
 ```json
-{ "path": "nginx.conf", "content": "worker_processes  1;\n...", "runTest": true }
+{ "path": "nginx.conf", "content": "worker_processes  1;\n...", "runTest": true, "doBackup": false }
 ```
 
 - `runTest`（可选，默认 true）：保存后是否执行 `nginx -t` 校验。
+- `doBackup`（可选，默认 false）：是否在写入前备份当前原文件。前端在用户确认「保存并备份」时传 true。
 
 **成功响应 200**（校验通过或未请求校验）
 
@@ -116,9 +117,12 @@
 {
   "ok": true,
   "backupId": "20260804_193000",
+  "backedUp": true,
   "test": { "ok": true, "output": "nginx: configuration file ... test is successful" }
 }
 ```
+
+- `backedUp`：本次是否执行了备份；未备份时为 false、`backupId` 为 null。
 
 **错误**
 - `400`：path 缺失或非法。
@@ -407,10 +411,23 @@
 统一管理常用目标地址，供所有代理的下拉切换复用，避免逐代理添加备选。
 
 **持久化**：目标池独立存储于用户数据目录 `targets.json`（不写入 nginx 配置），
-后端启动时加载，增删即持久化。
+后端启动时加载，增删即持久化。兼容旧版纯字符串列表（自动迁移为带别名的结构）。
+
+### PoolTarget（池条目模型）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| target | string | 目标地址（nginx 合法 proxy_pass 参数，须 `http://`/`https://`/`unix:` 前缀 + 合法主机） |
+| alias | string | 显示别名（可空，用于记住 IP/域名含义，如「生产集群」「测试环境」） |
+
+**URL 校验规则**（`proxymgr._normalize_target`）：
+- 必须 `http://` 或 `https://` 或 `unix:` 开头；`unix:` 后须为 `/` 开头的 socket 路径。
+- host 部分：合法主机名（字母/数字/`.`/`-`/`_`）或 IPv4；可带 `:端口`（端口为 1-5 位数字）。
+- 可带路径（`/` 开头，任意非空白字符）。
+- 拒绝：纯裸 IP/域名（无协议）、含空白、含 `{}`、任意乱输的字符串。
 
 **与代理的关系**：
-- 前端渲染代理下拉框时，选项 = 目标池全部地址 ∪ 该代理已有备选地址（去重）。
+- 前端渲染代理下拉框时，选项 = 目标池全部地址 ∪ 该代理已有备选地址（去重）；池地址带别名时显示 `别名 (地址)`。
 - 通过 `PUT /api/proxies/switch` 切换池中地址时，后端自动将该地址追加为该代理的备选并激活。
 - 删除池中地址**不影响**已写入各代理配置的备选（代理的备选独立存在于 nginx.conf）。
 
@@ -421,28 +438,48 @@
 **成功响应 200**
 
 ```json
-{ "targets": ["http://docker_balance", "http://my_balance", "http://10.170.103.65:10040/"] }
+{ "targets": [ { "target": "http://docker_balance", "alias": "生产Docker集群" }, { "target": "http://10.170.103.65:10040/", "alias": "" } ] }
 ```
 
 ### POST /api/proxy-pool
 
-添加目标地址。
+添加目标地址（可带别名）。
 
 **请求体**
 
 ```json
-{ "target": "http://zhang_balance" }
+{ "target": "http://zhang_balance", "alias": "张哥环境" }
 ```
 
 **成功响应 200**
 
 ```json
-{ "ok": true, "targets": ["http://docker_balance", "http://my_balance", "http://zhang_balance"] }
+{ "ok": true, "targets": [ { "target": "http://zhang_balance", "alias": "张哥环境" } ] }
 ```
 
 **错误**
-- `400`：target 缺失或非合法地址（须 `http://` / `https://` / `unix:` 前缀）。
-- `409`：target 已存在于池中（去重）。
+- `400`：target 缺失或不符合 URL 校验规则（不能随便输入字符串）。
+- `409`：target 已存在于池中（去重，按 target 去重）。
+
+### PUT /api/proxy-pool
+
+更新池条目的别名（或仅新增别名）。
+
+**请求体**
+
+```json
+{ "target": "http://zhang_balance", "alias": "张哥测试环境" }
+```
+
+**成功响应 200**
+
+```json
+{ "ok": true, "targets": [ { "target": "http://zhang_balance", "alias": "张哥测试环境" } ] }
+```
+
+**错误**
+- `400`：target 缺失。
+- `404`：target 不在池中。
 
 ### DELETE /api/proxy-pool
 
@@ -457,7 +494,7 @@
 **成功响应 200**
 
 ```json
-{ "ok": true, "targets": ["http://docker_balance", "http://my_balance"] }
+{ "ok": true, "targets": [] }
 ```
 
 **错误**
@@ -466,7 +503,8 @@
 
 ## 前端行为约定
 
-- 所有写操作（保存/启停/回滚）在弹确认框后进行；保存、回滚前前端提示「将自动备份原文件」。
+- 所有写操作（保存/启停/回滚）在弹确认框后进行；**保存提供「保存并备份 / 仅保存」选择**，备份仅在用户显式确认时执行（不再每次保存自动备份）。
 - `409` 响应中若含 `saved: true`，前端必须展示「已保存未应用」警告条，并给出「回滚」入口。
 - 状态面板每 10 秒轮询 `GET /api/status` 刷新运行状态与进程信息。
 - 保存按钮旁显示最近一次校验结果（成功/失败 + 输出摘要）。
+- 目标池地址带别名时，下拉与池列表均显示 `别名 (地址)`；无别名仅显示地址。

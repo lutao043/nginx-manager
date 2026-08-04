@@ -53,7 +53,7 @@ const api = {
   status() { return this.get("/api/status"); },
   configTree() { return this.get("/api/config"); },
   readFile(path) { return this.get("/api/config/file?path=" + encodeURIComponent(path)); },
-  saveFile(path, content, runTest) { return this.put("/api/config/file", { path, content, runTest }); },
+  saveFile(path, content, runTest, doBackup) { return this.put("/api/config/file", { path, content, runTest, doBackup }); },
   testConfig() { return this.post("/api/config/test"); },
   nginxAction(action) { return this.post("/api/nginx/" + action); },
   backups() { return this.get("/api/backups"); },
@@ -71,7 +71,8 @@ const api = {
 
   // ---- 目标地址池 ----
   proxyPool() { return this.get("/api/proxy-pool"); },
-  addPoolTarget(target) { return this.post("/api/proxy-pool", { target }); },
+  addPoolTarget(target, alias) { return this.post("/api/proxy-pool", { target, alias }); },
+  setPoolAlias(target, alias) { return this.put("/api/proxy-pool", { target, alias }); },
   removePoolTarget(target) { return this._request("DELETE", "/api/proxy-pool", { target }); },
 };
 

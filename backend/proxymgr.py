@@ -92,16 +92,25 @@ def parse_proxies(content: str) -> List[ProxyBlock]:
 
 # ---------- 修改操作 ----------
 
+_URL_RE = re.compile(
+    r"^(?:https?://[a-zA-Z0-9._\-]+(?::\d{1,5})?(?:/[^\s{}]*)?|unix:/[^\s{}]+)$"
+)
+
+
 def _normalize_target(target: str) -> Optional[str]:
-    """校验目标地址（新增/编辑备选时使用，须为 nginx 合法 proxy_pass 参数）。
+    """校验目标地址（新增/编辑备选、池条目时使用，须为 nginx 合法 proxy_pass 参数）。
+    规则：
+    - 必须 http:// 或 https:// 或 unix:/ 开头；
+    - host 为合法主机名/IPv4，可带 :端口（1-5 位数字）；
+    - 可带路径；拒绝含空白 / {} / 任意乱输字符串。
     注意：裸 ip:port（无 http://）不是合法 proxy_pass，注释里历史遗留的
     裸地址可以显示/尝试切换，但会被 nginx -t 拦截并回滚。"""
     t = target.strip()
     if not t or re.search(r"\s", t) or "{" in t or "}" in t:
         return None
-    if t.startswith(("http://", "https://", "unix:")):
-        return t
-    return None
+    if not _URL_RE.fullmatch(t):
+        return None
+    return t
 
 
 def _normalize_path(path: str) -> Optional[str]:
