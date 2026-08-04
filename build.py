@@ -37,10 +37,13 @@ def main() -> int:
 
     build_dir = os.path.join(ROOT, "build")
     dist_dir = os.path.join(ROOT, "dist")
-    # 清理旧产物，避免残留
+    # 清理旧产物，避免残留（沙箱环境回收站不可用时跳过，PyInstaller --clean 会兜底缓存）
     for d in (build_dir, dist_dir):
         if os.path.isdir(d):
-            shutil.rmtree(d)
+            try:
+                shutil.rmtree(d)
+            except OSError as e:
+                print(f"[build] 清理 {d} 失败（跳过，--clean 会处理）: {e}")
 
     run([sys.executable, "-m", "PyInstaller", SPEC, "--noconfirm", "--clean"])
 

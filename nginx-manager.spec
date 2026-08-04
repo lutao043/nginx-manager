@@ -11,7 +11,8 @@
 import os
 
 APP_NAME = "nginx-manager"
-ROOT = os.path.abspath(os.path.dirname(__file__))
+# PyInstaller 执行 spec 时提供 SPECPATH（脚本所在目录），__file__ 不可用
+ROOT = os.path.abspath(SPECPATH)
 
 a = Analysis(
     [os.path.join(ROOT, "backend", "server.py")],
