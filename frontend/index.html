@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>nginx 管理端</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app" class="layout">
+
+  <!-- 顶部栏 -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">◧</span>
+      <span class="brand-title">nginx 管理端</span>
+      <span id="statusBadge" class="badge badge-unknown">检测中…</span>
+    </div>
+    <div class="topbar-actions">
+      <button id="btnSettings" class="btn btn-ghost" type="button">设置</button>
+    </div>
+  </header>
+
+  <!-- 主区域 -->
+  <div class="main">
+
+    <!-- 配置引导（未配置时显示） -->
+    <section id="wizard" class="wizard" hidden>
+      <div class="wizard-card">
+        <h2>首次使用，请配置 nginx</h2>
+        <p class="wizard-tip">启动程序时系统已弹出选择窗口；若未出现或想修改，可在此手动填写。</p>
+        <div class="wizard-field">
+          <label>nginx 可执行文件</label>
+          <input id="wizNginxPath" type="text" placeholder="如 C:\nginx\nginx.exe" autocomplete="off">
+        </div>
+        <div class="wizard-field">
+          <label>配置目录（含 nginx.conf）</label>
+          <input id="wizConfDir" type="text" placeholder="如 C:\nginx\conf" autocomplete="off">
+        </div>
+        <div class="wizard-error" id="wizError" hidden></div>
+        <div class="wizard-actions">
+          <button id="btnWizSave" class="btn btn-primary" type="button">保存并开始</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 主界面 -->
+    <div id="dashboard" class="dashboard" hidden>
+
+      <!-- 左侧：配置文件树 -->
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <span>配置文件</span>
+          <button id="btnRefreshTree" class="btn btn-mini" type="button" title="刷新">↻</button>
+        </div>
+        <nav id="fileTree" class="file-tree"></nav>
+      </aside>
+
+      <!-- 右侧：内容区 -->
+      <section class="content">
+
+        <!-- 状态面板 -->
+        <div class="panel status-panel">
+          <div class="panel-title">运行状态</div>
+          <div class="status-grid">
+            <div class="status-item"><span class="k">状态</span><span class="v" id="stRunning">—</span></div>
+            <div class="status-item"><span class="k">版本</span><span class="v" id="stVersion">—</span></div>
+            <div class="status-item"><span class="k">PID</span><span class="v" id="stPid">—</span></div>
+            <div class="status-item"><span class="k">配置文件</span><span class="v mono" id="stConf">—</span></div>
+          </div>
+          <div class="status-actions">
+            <button id="btnStart" class="btn" type="button">启动</button>
+            <button id="btnStop" class="btn" type="button">停止</button>
+            <button id="btnReload" class="btn" type="button">重载</button>
+            <button id="btnRestart" class="btn btn-primary" type="button">重启</button>
+            <button id="btnTest" class="btn" type="button">校验配置 (nginx -t)</button>
+          </div>
+          <div class="test-result" id="testResult" hidden></div>
+        </div>
+
+        <!-- 编辑器 -->
+        <div class="panel editor-panel" hidden id="editorPanel">
+          <div class="panel-title-row">
+            <span class="panel-title mono" id="editorTitle">—</span>
+            <span class="editor-hint">保存前自动备份原文件，并执行 nginx -t 校验</span>
+          </div>
+          <textarea id="editor" class="editor" spellcheck="false" wrap="off"></textarea>
+          <div class="editor-actions">
+            <span class="editor-meta" id="editorMeta"></span>
+            <button id="btnSave" class="btn btn-primary" type="button">保存</button>
+          </div>
+          <div class="editor-warning" id="saveWarning" hidden></div>
+        </div>
+
+        <!-- 空状态 -->
+        <div class="panel empty-panel" id="emptyPanel" hidden>
+          <p>从左侧选择要编辑的配置文件。</p>
+        </div>
+
+        <!-- 备份 -->
+        <div class="panel backup-panel">
+          <div class="panel-title-row">
+            <span class="panel-title">配置备份</span>
+            <button id="btnRefreshBackups" class="btn btn-mini" type="button" title="刷新">↻</button>
+          </div>
+          <div id="backupList" class="backup-list"><p class="muted">暂无备份</p></div>
+        </div>
+
+        <!-- 错误日志 -->
+        <div class="panel log-panel">
+          <div class="panel-title-row">
+            <span class="panel-title">错误日志</span>
+            <span class="panel-title mono small" id="logPathLabel"></span>
+            <button id="btnRefreshLog" class="btn btn-mini" type="button" title="刷新">↻</button>
+          </div>
+          <pre id="errorLog" class="log-view">（点击刷新加载错误日志）</pre>
+        </div>
+
+      </section>
+    </div>
+  </div>
+
+  <!-- 设置弹窗 -->
+  <div class="modal-mask" id="settingsModal" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <span class="panel-title">设置</span>
+        <button class="modal-close" id="btnCloseModal" type="button" aria-label="关闭" data-close>×</button>
+      </div>
+      <div class="modal-body">
+        <div class="wizard-field">
+          <label>nginx 可执行文件</label>
+          <input id="setNginxPath" type="text" autocomplete="off">
+        </div>
+        <div class="wizard-field">
+          <label>配置目录（含 nginx.conf）</label>
+          <input id="setConfDir" type="text" autocomplete="off">
+        </div>
+        <div class="wizard-error" id="setError" hidden></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" id="btnCancelModal" type="button" data-close>取消</button>
+        <button class="btn btn-primary" id="btnSaveSettings" type="button">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 通用确认弹窗 -->
+  <div class="modal-mask" id="confirmModal" hidden>
+    <div class="modal modal-sm">
+      <div class="modal-head"><span class="panel-title">确认操作</span></div>
+      <div class="modal-body"><p id="confirmText"></p></div>
+      <div class="modal-foot">
+        <button class="btn" id="btnConfirmNo" type="button">取消</button>
+        <button class="btn btn-primary" id="btnConfirmYes" type="button">确认</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 全局提示 -->
+  <div id="toast" class="toast" hidden></div>
+</div>
+
+<script src="js/api.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

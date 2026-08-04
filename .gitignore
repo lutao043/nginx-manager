@@ -1,0 +1,17 @@
+# 运行时数据（实际在用户数据目录，这里兜底忽略本地副本）
+data/
+*.log
+
+# 构建产物
+build/
+dist/
+*.spec.bak
+
+# Python
+__pycache__/
+*.pyc
+
+# 测试产物
+tests/out/
+tests/*.png
+tests/*.html
