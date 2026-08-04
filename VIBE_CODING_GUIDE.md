@@ -60,7 +60,10 @@
 ## 启动 / 构建命令
 
 ```bash
-# 开发启动（工作区存在 nginx-1.30.4/ 时默认直接管理它；否则弹选择窗口）
+# 开发启动（固定默认端口 8310；工作区存在 nginx-1.30.4/ 时默认直接管理它）
+python backend/server.py
+
+# 指定端口（被占用时自动换随机端口）
 python backend/server.py --port 8080
 
 # 指定 nginx（跳过默认/对话框）
@@ -69,6 +72,28 @@ python backend/server.py --nginx-path C:/nginx/nginx.exe --conf-dir C:/nginx/con
 # 打包单文件 exe
 python build.py          # 产物 dist/nginx-manager.exe
 ```
+
+## 端口与 nginx 反向代理
+
+- 服务固定默认端口 **8310**（`server.py::DEFAULT_PORT`），`--port` 可覆盖。
+- 通过 nginx 反向代理以 **`/nginx-manager/`** 前缀访问（无需占用 8310 直连）：
+
+```nginx
+server {
+    listen       80;
+    server_name  localhost;
+
+    location /nginx-manager/ {
+        proxy_pass http://127.0.0.1:8310/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+- 前端自动适配路径前缀（`api.js::detectBase`）：经代理访问时 API 请求自动带 `/nginx-manager` 前缀，直连 8310 时无前缀，两种形态互不干扰。
+- 工作区测试 nginx（nginx-1.30.4）的 `conf/nginx.conf` 已内置上述代理配置，`nginx -s reload` 后即可通过 `http://127.0.0.1/nginx-manager/` 访问管理端。
 
 ## 本地测试用 nginx
 

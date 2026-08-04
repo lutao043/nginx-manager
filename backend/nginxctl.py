@@ -192,15 +192,31 @@ class NginxController:
     # ---------- 进程控制 ----------
 
     def start(self) -> Tuple[bool, str]:
+        """启动 nginx。关键：master 常驻不退出，必须用 Popen 分离启动，
+        不能用 subprocess.run（会因不退出而超时，超时后连带杀掉 master 进程树）。"""
         if not os.path.isfile(self.nginx_path):
             return False, f"nginx 可执行文件不存在: {self.nginx_path}"
-        code, out, err = _run(self._base_cmd() + ["-c", self.main_conf_path()], timeout=15)
-        time.sleep(1.0)  # 给 master 进程一点启动时间
+        # 启动前先校验配置，拿错误信息（比启动失败后再猜原因直观）
+        code, result = self.test_config()
+        if not result.get("ok"):
+            return False, f"nginx -t 校验失败，未启动: {result.get('output', '')}"
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if WIN else 0
+        try:
+            subprocess.Popen(
+                self._base_cmd() + ["-c", self.main_conf_path()],
+                cwd=self.prefix,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=flags,
+            )
+        except OSError as e:
+            return False, f"nginx 启动失败: {e}"
+        time.sleep(1.2)  # 给 master 一点启动时间
         info = self.detect_process()
         if info and info["running"]:
             return True, "nginx 已启动"
-        detail = (err or out).strip()
-        return False, f"nginx 启动失败" + (f": {detail}" if detail else "")
+        return False, "nginx 启动失败：请检查端口占用或错误日志"
 
     def stop(self) -> Tuple[bool, str]:
         info = self.detect_process()

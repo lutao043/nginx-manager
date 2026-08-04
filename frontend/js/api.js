@@ -1,8 +1,22 @@
-/* api.js — 统一 API 请求封装 */
+/* api.js — 统一 API 请求封装
+   支持两种访问形态：
+   1) 直连 http://127.0.0.1:8310/            → API 走 /api/...
+   2) 经 nginx 代理 http://host/nginx-manager/ → 自动带前缀 /nginx-manager/api/...
+   通过当前页面路径自动判断（检测首段路径是否非 /api、非静态资源）。
+*/
 "use strict";
 
+function detectBase() {
+  const seg = (window.location.pathname || "/").split("/").filter(Boolean);
+  // 首段若是纯文件名（含 .）或已知静态资源目录，视为直连模式（无前缀）
+  if (seg.length > 0 && !seg[0].includes(".") && !["api", "css", "js"].includes(seg[0])) {
+    return "/" + seg[0];
+  }
+  return "";
+}
+
 const api = {
-  base: "",
+  base: detectBase(),
 
   async _request(method, path, body) {
     const opts = { method, headers: {} };

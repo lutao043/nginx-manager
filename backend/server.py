@@ -5,8 +5,8 @@
     python backend/server.py [--port 8080] [--nginx-path <exe>] [--conf-dir <dir>]
 
 特性：
-  - 仅监听 127.0.0.1
-  - 端口 --port 指定，缺省随机空闲端口（启动时打印实际地址并尝试打开浏览器）
+  - 仅监听 127.0.0.1；固定默认端口 8310（--port 可覆盖，被占用时自动换随机端口）
+  - 支持通过外部 nginx 反向代理以 /nginx-manager/ 前缀访问（见 VIBE_CODING_GUIDE.md）
   - 本地开发默认：若工作区根目录存在 nginx-1.30.4/（测试用 nginx），直接作为管理对象；
     否则首次使用（settings 未配置且未传参数）弹系统文件选择对话框让用户指定
     nginx 程序路径与配置目录（tkinter，打包 exe 内可用）；无图形环境时可
@@ -594,6 +594,9 @@ class Handler(BaseHTTPRequestHandler):
 
 # ---------- 端口 ----------
 
+DEFAULT_PORT = 8310  # 固定默认端口；--port 可覆盖
+
+
 def find_free_port(preferred: int | None) -> int:
     if preferred:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -621,7 +624,7 @@ def find_workspace_nginx() -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="nginx 轻量网页管理端")
-    parser.add_argument("--port", type=int, default=None, help="监听端口（缺省随机空闲端口）")
+    parser.add_argument("--port", type=int, default=None, help=f"监听端口（缺省 {DEFAULT_PORT}）")
     parser.add_argument("--nginx-path", default=None, help="nginx 可执行文件路径（跳过首次选择对话框）")
     parser.add_argument("--conf-dir", default=None, help="nginx 配置目录（跳过首次选择对话框）")
     args = parser.parse_args()
@@ -654,7 +657,9 @@ def main() -> int:
             print(f"已保存配置: nginx={nginx_path}\n            confDir={conf_dir}")
 
     Handler.controller = create_controller(nginx_path, conf_dir)
-    port = find_free_port(args.port)
+    port = find_free_port(args.port or DEFAULT_PORT)
+    if port != (args.port or DEFAULT_PORT):
+        print(f"[提示] 默认端口 {DEFAULT_PORT} 被占用，改用随机端口 {port}")
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{port}"
     print(f"nginx 管理端已启动: {url}")
