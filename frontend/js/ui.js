@@ -86,6 +86,7 @@ function confirmChoice(text, options) {
       foot.appendChild(btn);
     });
     mask.addEventListener("click", onMask);
+    mask.hidden = false;  // 显示弹窗
   });
 }
 
