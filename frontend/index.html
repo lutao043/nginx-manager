@@ -132,13 +132,17 @@
         <section class="content">
           <div class="panel">
             <div class="panel-title-row">
-              <span class="panel-title">反向代理列表</span>
+              <span class="panel-title">反向代理列表<span id="proxyCount" class="panel-count"></span></span>
               <div class="panel-actions">
                 <button id="btnRefreshProxies" class="btn btn-mini" type="button" title="刷新">↻</button>
                 <button id="btnAddProxy" class="btn btn-primary btn-mini" type="button">＋ 添加代理</button>
               </div>
             </div>
             <div class="proxy-tip muted small">切换目标地址后自动备份并执行 nginx -t 校验，通过后生效</div>
+            <div class="proxy-search-row">
+              <input id="proxySearch" class="proxy-search-input" type="text" placeholder="🔍 按路径 / 目标地址搜索代理…" autocomplete="off">
+              <button id="btnClearProxySearch" class="btn btn-mini" type="button" title="清除搜索" hidden>✕ 清除</button>
+            </div>
             <div id="proxyList" class="proxy-list"><p class="muted">加载中…</p></div>
           </div>
 

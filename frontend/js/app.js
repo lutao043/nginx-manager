@@ -71,6 +71,22 @@ const App = (() => {
     $("#btnAddProxy").addEventListener("click", openAddProxy);
     $("#btnConfirmAddProxy").addEventListener("click", confirmAddProxy);
     $("#btnSaveTargets").addEventListener("click", saveTargets);
+    // 代理搜索：输入实时过滤，清除按钮恢复全量
+    $("#proxySearch").addEventListener("input", (e) => {
+      proxySearch = e.target.value;
+      renderProxyList(filterProxies());
+      $("#btnClearProxySearch").hidden = !proxySearch.trim();
+      const cnt = document.getElementById("proxyCount");
+      if (cnt) cnt.textContent = proxySearch ? `（${filterProxies().length}/${allProxies.length}）` : `（${allProxies.length}）`;
+    });
+    $("#btnClearProxySearch").addEventListener("click", () => {
+      proxySearch = "";
+      $("#proxySearch").value = "";
+      $("#btnClearProxySearch").hidden = true;
+      renderProxyList(filterProxies());
+      const cnt = document.getElementById("proxyCount");
+      if (cnt) cnt.textContent = `（${allProxies.length}）`;
+    });
     // 目标地址池
     $("#btnAddPoolTarget").addEventListener("click", openAddPool);
     $("#btnConfirmAddPool").addEventListener("click", () => {
@@ -420,10 +436,26 @@ const App = (() => {
   }
 
   /* ---------- 代理管理 ---------- */
+  let allProxies = [];      // 全量代理列表（搜索过滤用）
+  let proxySearch = "";     // 当前搜索关键词
+
+  function filterProxies() {
+    const kw = proxySearch.trim().toLowerCase();
+    if (!kw) return allProxies;
+    return allProxies.filter((p) => {
+      if (p.path && p.path.toLowerCase().includes(kw)) return true;
+      return (p.targets || []).some((t) => t.toLowerCase().includes(kw));
+    });
+  }
+
   async function loadProxies() {
     try {
       const data = await api.proxies();
-      renderProxyList(data.proxies || []);
+      allProxies = data.proxies || [];
+      renderProxyList(filterProxies());
+      $("#proxySearchCount").textContent = "";
+      const cnt = document.getElementById("proxyCount");
+      if (cnt) cnt.textContent = proxySearch ? `（${filterProxies().length}/${allProxies.length}）` : `（${allProxies.length}）`;
     } catch (e) {
       $("#proxyList").innerHTML = '<p class="muted">加载失败：' + escapeHtml(e.message) + "</p>";
     }
@@ -655,6 +687,16 @@ const App = (() => {
       showProxyTest(res.test);
       toast("已切换: " + p.path + " → " + target, "success");
       loadProxies();
+      refreshStatus();
+      // 切换成功后询问是否立即重载配置
+      const reloadNow = await confirmDialog("配置已切换并校验通过。\n是否立即重载 nginx 配置？");
+      if (!reloadNow) return;
+      const reloadRes = await api.nginxAction("reload");
+      if (reloadRes && reloadRes.ok) {
+        toast("nginx 配置已重载", "success");
+      } else {
+        toast((reloadRes && reloadRes.message) || "重载失败", "error");
+      }
       refreshStatus();
     } catch (e) {
       showProxyTest(e.payload && e.payload.test);
