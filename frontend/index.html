@@ -255,6 +255,10 @@
           <label>自动保留备份份数（0 = 不自动清理）</label>
           <input id="setBackupRetention" type="number" min="0" max="100" autocomplete="off">
         </div>
+        <div class="wizard-field">
+          <label>监听端口（修改后服务自动重启）</label>
+          <input id="setPort" type="number" min="1" max="65535" autocomplete="off">
+        </div>
         <div class="wizard-error" id="setError" hidden></div>
       </div>
       <div class="modal-foot">

@@ -276,15 +276,16 @@
 
 ### GET /api/settings
 
-返回当前设置（nginxPath、confDir、backupRetention）。
+返回当前设置（nginxPath、confDir、port、backupRetention）。
 
 **成功响应 200**
 
 ```json
-{ "nginxPath": "C:/nginx/nginx.exe", "confDir": "C:/nginx/conf", "backupRetention": 7, "configured": true }
+{ "nginxPath": "C:/nginx/nginx.exe", "confDir": "C:/nginx/conf", "port": 8310, "backupRetention": 7, "configured": true }
 ```
 
 - `configured`：nginxPath 与 confDir 是否均已配置。
+- `port`：当前监听端口（settings 未配置时返回默认 8310）。
 - `backupRetention`：自动保留备份份数（默认 7；0 表示不自动清理）。
 
 ### PUT /api/settings
@@ -294,16 +295,39 @@
 **请求体**
 
 ```json
-{ "nginxPath": "C:/nginx/nginx.exe", "confDir": "C:/nginx/conf", "backupRetention": 7 }
+{ "nginxPath": "C:/nginx/nginx.exe", "confDir": "C:/nginx/conf", "backupRetention": 7, "port": 9000 }
 ```
 
 - `backupRetention`（可选）：整数，范围 1~100（`0` 表示不自动清理）。未传则保持不变。
+- `port`（可选）：整数，范围 1~65535，修改监听端口。未传则保持不变。
+  **注意**：仅保存设置不会自动重启；需再调 `POST /api/restart` 使新端口生效。
 
 **成功响应 200**
 
 ```json
-{ "ok": true, "nginxPath": "...", "confDir": "..." }
+{ "ok": true, "nginxPath": "...", "confDir": "...", "port": 9000, "backupRetention": 7 }
 ```
+
+### POST /api/restart
+
+保存端口后自动重启服务（启动新实例并退出当前进程，单实例逻辑保证旧进程被清理）。
+
+**请求体**
+
+```json
+{ "port": 9000 }
+```
+
+- `port`（可选）：重启时写入新监听端口（1~65535）。不传则沿用 settings 中的端口。
+
+**成功响应 200**
+
+```json
+{ "ok": true, "restarting": true, "port": 9000 }
+```
+
+**注意**：响应返回后约 0.5~2 秒服务会重启，期间旧端口短暂不可用；
+前端应轮询新端口 `GET /api/status` 就绪后跳转 `http://127.0.0.1:<port>/`。
 
 **错误**
 - `400`：字段缺失。

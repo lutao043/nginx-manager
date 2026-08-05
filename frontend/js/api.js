@@ -61,11 +61,13 @@ const api = {
   deleteBackup(id) { return this._request("DELETE", "/api/backups", { id }); },
   errorLog(lines) { return this.get("/api/logs/error?lines=" + (lines || 200)); },
   settings() { return this.get("/api/settings"); },
-  saveSettings(nginxPath, confDir, backupRetention) {
+  saveSettings(nginxPath, confDir, backupRetention, port) {
     const body = { nginxPath, confDir };
     if (backupRetention !== null && backupRetention !== undefined) body.backupRetention = backupRetention;
+    if (port !== null && port !== undefined) body.port = port;
     return this.put("/api/settings", body);
   },
+  restart(port) { return this.post("/api/restart", { port }); },
 
   // ---- 代理管理 ----
   proxies() { return this.get("/api/proxies"); },

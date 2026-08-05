@@ -21,6 +21,7 @@ import json
 import os
 import shutil
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -59,6 +60,86 @@ def ensure_data_dirs() -> dict:
     os.makedirs(root, exist_ok=True)
     os.makedirs(backups, exist_ok=True)
     return {"root": root, "backups": backups}
+
+
+# ---------- 单实例 ----------
+
+def _pid_alive(pid: int) -> bool:
+    """判断 PID 进程是否存活（跨平台）。"""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        try:
+            h = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not h:
+                return False
+            ctypes.windll.kernel32.CloseHandle(h)
+            return True
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def kill_existing_instance(lock_path: str) -> int:
+    """读取单实例锁文件，若记录的 PID 存活则强制终止，返回被杀 PID；否则返回 0。"""
+    if not os.path.isfile(lock_path):
+        return 0
+    try:
+        with open(lock_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        pid = int(data.get("pid", 0))
+    except (json.JSONDecodeError, OSError, ValueError, AttributeError):
+        return 0
+    if pid and _pid_alive(pid):
+        try:
+            os.kill(pid, 9)  # Windows 下为强制终止（TerminateProcess）
+            print(f"[单实例] 已终止旧实例 (PID {pid})，以当前启动为准")
+            return pid
+        except OSError as e:
+            print(f"[单实例] 终止旧实例失败: {e}")
+    return 0
+
+
+def write_instance_lock(lock_path: str, pid: int, port: int) -> None:
+    """写单实例锁文件（记录 PID 与端口）。"""
+    try:
+        with open(lock_path, "w", encoding="utf-8") as f:
+            json.dump({"pid": pid, "port": port, "startedAt": datetime.now().isoformat()}, f)
+    except OSError:
+        pass
+
+
+def restart_command() -> list:
+    """构造重启命令：exe 直接重启自身；开发模式去掉 --port（新实例从 settings 读端口）。"""
+    if getattr(sys, "frozen", False):  # PyInstaller 打包
+        return [sys.executable]
+    args = [a for a in sys.argv if a != "--port" and not a.startswith("--port=")]
+    return [sys.executable] + args
+
+
+def spawn_and_exit(cmd: list) -> None:
+    """以分离进程启动新实例，然后立即退出当前进程。"""
+    try:
+        flags = 0
+        kwargs = {}
+        if os.name == "nt":
+            flags = getattr(subprocess, "DETACHED_PROCESS", 0x00000008) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        else:
+            kwargs["start_new_session"] = True
+        subprocess.Popen(
+            cmd, cwd=os.getcwd(), creationflags=flags, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs,
+        )
+    except Exception as e:
+        print(f"[重启] 启动新实例失败: {e}")
+        return
+    os._exit(0)  # 当前进程立即退出，由新实例接管（含单实例清理）
 
 
 # ---------- Settings ----------
@@ -511,6 +592,7 @@ class Handler(BaseHTTPRequestHandler):
         self._ok({
             "nginxPath": self.settings.get("nginxPath"),
             "confDir": self.settings.get("confDir"),
+            "port": int(self.settings.get("port", 0) or 0) or DEFAULT_PORT,
             "backupRetention": self.settings.get("backupRetention", BACKUP_RETENTION),
             "configured": self.settings.configured(),
         })
@@ -534,6 +616,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_proxies_add()
         elif path == "/api/proxy-pool":
             self._api_proxy_pool_add()
+        elif path == "/api/restart":
+            self._api_restart()
         else:
             self._err(404, "接口不存在")
 
@@ -757,13 +841,47 @@ class Handler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 self._err(400, "backupRetention 必须为 0~100 的整数")
                 return
+        # 监听端口（可选，1~65535）
+        new_port = body.get("port")
+        if new_port is not None:
+            try:
+                np = int(new_port)
+                if not (1 <= np <= 65535):
+                    raise ValueError
+                self.settings.set("port", np)
+            except (TypeError, ValueError):
+                self._err(400, "port 必须为 1~65535 的整数")
+                return
         Handler.controller = create_controller(nginx_path, conf_dir)
         self._ok({
             "ok": True,
             "nginxPath": nginx_path,
             "confDir": conf_dir,
+            "port": int(self.settings.get("port", 0) or 0) or DEFAULT_PORT,
             "backupRetention": self.settings.get("backupRetention", BACKUP_RETENTION),
         })
+
+    # ---- 服务重启 ----
+
+    def _api_restart(self) -> None:
+        """保存端口后自动重启：启动新实例（分离进程），随后退出当前进程。
+        新实例启动时通过单实例锁杀掉旧实例（本进程），以新启动为准。"""
+        body = self._read_json_body()
+        new_port = body.get("port")
+        if new_port is not None:
+            try:
+                np = int(new_port)
+                if not (1 <= np <= 65535):
+                    raise ValueError
+                self.settings.set("port", np)
+            except (TypeError, ValueError):
+                self._err(400, "port 必须为 1~65535 的整数")
+                return
+        cmd = restart_command()
+        target_port = int(self.settings.get("port", 0) or 0) or DEFAULT_PORT
+        self._ok({"ok": True, "restarting": True, "port": target_port})
+        # 延迟 0.5s 让响应先返回，再启动新实例并退出当前进程
+        threading.Timer(0.5, spawn_and_exit, args=(cmd,)).start()
 
     # ---- 代理管理 ----
 
@@ -951,14 +1069,17 @@ class Handler(BaseHTTPRequestHandler):
 DEFAULT_PORT = 8310  # 固定默认端口；--port 可覆盖
 
 
-def find_free_port(preferred: int | None) -> int:
+def find_free_port(preferred: int | None, retries: int = 10) -> int:
+    """返回可绑定端口。preferred 被占用时短暂重试（旧实例被杀后端口释放有延迟），
+    仍不可用则退回随机空闲端口。"""
     if preferred:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind(("127.0.0.1", preferred))
-                return preferred
-            except OSError:
-                pass
+        for _ in range(retries):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                try:
+                    s.bind(("127.0.0.1", preferred))
+                    return preferred
+                except OSError:
+                    time.sleep(0.2)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
@@ -991,6 +1112,10 @@ def main() -> int:
     global BACKUP_RETENTION
     BACKUP_RETENTION = int(Handler.settings.get("backupRetention", 7) or 7)
 
+    # 单实例：若已有旧实例在运行，强制终止，以当前启动为准
+    lock_path = os.path.join(data_dirs["root"], "instance.lock")
+    killed = kill_existing_instance(lock_path)
+
     nginx_path = args.nginx_path or Handler.settings.get("nginxPath")
     conf_dir = args.conf_dir or Handler.settings.get("confDir")
 
@@ -1015,10 +1140,13 @@ def main() -> int:
             print(f"已保存配置: nginx={nginx_path}\n            confDir={conf_dir}")
 
     Handler.controller = create_controller(nginx_path, conf_dir)
-    port = find_free_port(args.port or DEFAULT_PORT)
-    if port != (args.port or DEFAULT_PORT):
-        print(f"[提示] 默认端口 {DEFAULT_PORT} 被占用，改用随机端口 {port}")
+    # 端口优先级：--port > settings.port > DEFAULT_PORT
+    prefer_port = args.port or int(Handler.settings.get("port", 0) or 0) or DEFAULT_PORT
+    port = find_free_port(prefer_port)
+    if port != prefer_port:
+        print(f"[提示] 端口 {prefer_port} 被占用，改用随机端口 {port}")
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    write_instance_lock(lock_path, os.getpid(), port)
     url = f"http://127.0.0.1:{port}"
     print(f"nginx 管理端已启动: {url}")
     print("仅监听 127.0.0.1；Ctrl+C 退出。")

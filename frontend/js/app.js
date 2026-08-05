@@ -144,12 +144,16 @@ const App = (() => {
   function hideWizError() { $("#wizError").hidden = true; }
 
   /* ---------- 设置弹窗 ---------- */
+  let currentSettingsPort = null; // 当前服务实际端口（用于判断是否变更）
+
   async function openSettings() {
     try {
       const s = await api.settings();
+      currentSettingsPort = s.port || 8310;
       $("#setNginxPath").value = s.nginxPath || "";
       $("#setConfDir").value = s.confDir || "";
       $("#setBackupRetention").value = s.backupRetention != null ? s.backupRetention : 7;
+      $("#setPort").value = s.port || 8310;
       $("#setError").hidden = true;
       lockBody();
       openModal("#settingsModal");
@@ -162,6 +166,7 @@ const App = (() => {
     const nginxPath = $("#setNginxPath").value.trim();
     const confDir = $("#setConfDir").value.trim();
     const retentionRaw = $("#setBackupRetention").value.trim();
+    const portRaw = $("#setPort").value.trim();
     if (!nginxPath || !confDir) {
       $("#setError").textContent = "请填写完整路径";
       $("#setError").hidden = false;
@@ -173,10 +178,36 @@ const App = (() => {
       $("#setError").hidden = false;
       return;
     }
+    const newPort = portRaw === "" ? null : parseInt(portRaw, 10);
+    if (newPort !== null && (isNaN(newPort) || newPort < 1 || newPort > 65535)) {
+      $("#setError").textContent = "端口必须为 1~65535 的整数";
+      $("#setError").hidden = false;
+      return;
+    }
+    // 端口变更 → 确认自动重启
+    const portChanged = newPort !== null && newPort !== currentSettingsPort;
+    if (portChanged) {
+      const ok = await confirmDialog("端口将改为 " + newPort + "，服务会自动重启并打开新地址。确认？");
+      if (!ok) return;
+    }
     try {
-      await api.saveSettings(nginxPath, confDir, retention);
+      await api.saveSettings(nginxPath, confDir, retention, newPort);
       closeModal("#settingsModal");
       unlockBody();
+      if (portChanged) {
+        // 触发服务重启，等待新端口就绪后跳转
+        toast("端口已更新，服务重启中…", "success");
+        try { await api.restart(newPort); } catch (e) { /* 重启瞬间连接断开属正常 */ }
+        const newUrl = "http://" + window.location.hostname + ":" + newPort + "/";
+        const ready = await waitForServer(newUrl, 40);
+        if (ready) {
+          toast("服务已在新端口启动", "success");
+          window.location.href = newUrl;
+        } else {
+          toast("服务重启中，请稍后手动访问 " + newUrl, "error");
+        }
+        return;
+      }
       toast("设置已保存", "success");
       // 配置可能变化，刷新整个面板
       await loadTree();
@@ -187,6 +218,18 @@ const App = (() => {
       $("#setError").textContent = e.message;
       $("#setError").hidden = false;
     }
+  }
+
+  /* 轮询等待服务就绪（最多 maxSeconds 秒） */
+  async function waitForServer(url, maxSeconds) {
+    for (let i = 0; i < maxSeconds * 2; i++) {
+      try {
+        const r = await fetch(url + "api/status");
+        if (r.ok) return true;
+      } catch (e) { /* 未就绪，继续等 */ }
+      await new Promise((res) => setTimeout(res, 500));
+    }
+    return false;
   }
 
   /* ---------- 状态轮询 ---------- */
