@@ -14,12 +14,16 @@ APP_NAME = "nginx-manager"
 # PyInstaller 执行 spec 时提供 SPECPATH（脚本所在目录），__file__ 不可用
 ROOT = os.path.abspath(SPECPATH)
 
+from PyInstaller.utils.hooks import collect_submodules
+
 a = Analysis(
     [os.path.join(ROOT, "backend", "server.py")],
     pathex=[os.path.join(ROOT, "backend")],
     binaries=[],
     datas=[(os.path.join(ROOT, "frontend"), "frontend")],
-    hiddenimports=["tkinter"],
+    # tkinter 是标准库，但 PyInstaller 静态分析不会自动收齐 _tkinter.pyd
+    # 与 tcl/tk DLL；用 collect_submodules 显式抓全所有子模块
+    hiddenimports=collect_submodules("tkinter"),
     hookspath=[],
     runtime_hooks=[],
     excludes=[],
