@@ -453,7 +453,6 @@ const App = (() => {
       const data = await api.proxies();
       allProxies = data.proxies || [];
       renderProxyList(filterProxies());
-      $("#proxySearchCount").textContent = "";
       const cnt = document.getElementById("proxyCount");
       if (cnt) cnt.textContent = proxySearch ? `（${filterProxies().length}/${allProxies.length}）` : `（${allProxies.length}）`;
     } catch (e) {
