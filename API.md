@@ -205,13 +205,38 @@
 
 ### GET /api/backups
 
-列出所有备份。
+列出所有备份（按时间倒序，最新的在前）。
 
 **成功响应 200**
 
 ```json
-{ "backups": [ { "id": "20260804_193000", "createdAt": "2026-08-04 19:30:00", "files": ["nginx.conf"] } ] }
+{ "backups": [ { "id": "20260804_193000", "createdAt": "2026-08-04 19:30:00", "files": ["nginx.conf"] } ], "retention": 7 }
 ```
+
+- `retention`：当前自动保留份数（来自设置 `backupRetention`，默认 7；`0` 表示不自动清理）。
+
+### DELETE /api/backups
+
+手动删除指定备份。**请求体**
+
+```json
+{ "id": "20260804_193000" }
+```
+
+**成功响应 200**
+
+```json
+{ "ok": true, "deleted": "20260804_193000", "backups": [ ...剩余列表... ] }
+```
+
+**错误**
+- `400`：id 缺失或非法。
+- `404`：备份不存在。
+
+### 自动清理（prune）
+
+每次创建新备份后，自动删除超过 `backupRetention` 份的最旧备份目录。
+`backupRetention <= 0` 表示不自动清理（仍可手动删）。保留数量在设置页调整。
 
 ### POST /api/backups/restore
 
@@ -251,15 +276,16 @@
 
 ### GET /api/settings
 
-返回当前设置（nginxPath、confDir）。
+返回当前设置（nginxPath、confDir、backupRetention）。
 
 **成功响应 200**
 
 ```json
-{ "nginxPath": "C:/nginx/nginx.exe", "confDir": "C:/nginx/conf", "configured": true }
+{ "nginxPath": "C:/nginx/nginx.exe", "confDir": "C:/nginx/conf", "backupRetention": 7, "configured": true }
 ```
 
 - `configured`：nginxPath 与 confDir 是否均已配置。
+- `backupRetention`：自动保留备份份数（默认 7；0 表示不自动清理）。
 
 ### PUT /api/settings
 
@@ -268,8 +294,10 @@
 **请求体**
 
 ```json
-{ "nginxPath": "C:/nginx/nginx.exe", "confDir": "C:/nginx/conf" }
+{ "nginxPath": "C:/nginx/nginx.exe", "confDir": "C:/nginx/conf", "backupRetention": 7 }
 ```
+
+- `backupRetention`（可选）：整数，范围 1~100（`0` 表示不自动清理）。未传则保持不变。
 
 **成功响应 200**
 

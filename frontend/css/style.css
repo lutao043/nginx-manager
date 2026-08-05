@@ -220,6 +220,9 @@ input[type="text"]:focus { outline: none; border-color: var(--accent); }
 }
 .backup-item .meta { color: var(--text-2); }
 .backup-item .files { color: var(--text-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
+.backup-item .backup-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.btn-danger { color: var(--danger); border-color: rgba(224, 108, 95, .4); }
+.btn-danger:hover { background: rgba(224, 108, 95, .15); }
 
 /* 日志 */
 .log-view {

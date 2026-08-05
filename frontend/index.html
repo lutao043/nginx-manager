@@ -111,6 +111,7 @@
             <span class="panel-title">配置备份</span>
             <button id="btnRefreshBackups" class="btn btn-mini" type="button" title="刷新">↻</button>
           </div>
+          <div class="proxy-tip muted small" id="backupRetentionTip"></div>
           <div id="backupList" class="backup-list"><p class="muted">暂无备份</p></div>
         </div>
 
@@ -249,6 +250,10 @@
         <div class="wizard-field">
           <label>配置目录（含 nginx.conf）</label>
           <input id="setConfDir" type="text" autocomplete="off">
+        </div>
+        <div class="wizard-field">
+          <label>自动保留备份份数（0 = 不自动清理）</label>
+          <input id="setBackupRetention" type="number" min="0" max="100" autocomplete="off">
         </div>
         <div class="wizard-error" id="setError" hidden></div>
       </div>

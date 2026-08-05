@@ -58,9 +58,14 @@ const api = {
   nginxAction(action) { return this.post("/api/nginx/" + action); },
   backups() { return this.get("/api/backups"); },
   restoreBackup(id) { return this.post("/api/backups/restore", { id }); },
+  deleteBackup(id) { return this._request("DELETE", "/api/backups", { id }); },
   errorLog(lines) { return this.get("/api/logs/error?lines=" + (lines || 200)); },
   settings() { return this.get("/api/settings"); },
-  saveSettings(nginxPath, confDir) { return this.put("/api/settings", { nginxPath, confDir }); },
+  saveSettings(nginxPath, confDir, backupRetention) {
+    const body = { nginxPath, confDir };
+    if (backupRetention !== null && backupRetention !== undefined) body.backupRetention = backupRetention;
+    return this.put("/api/settings", body);
+  },
 
   // ---- 代理管理 ----
   proxies() { return this.get("/api/proxies"); },

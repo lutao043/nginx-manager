@@ -149,6 +149,7 @@ const App = (() => {
       const s = await api.settings();
       $("#setNginxPath").value = s.nginxPath || "";
       $("#setConfDir").value = s.confDir || "";
+      $("#setBackupRetention").value = s.backupRetention != null ? s.backupRetention : 7;
       $("#setError").hidden = true;
       lockBody();
       openModal("#settingsModal");
@@ -160,13 +161,20 @@ const App = (() => {
   async function saveSettings() {
     const nginxPath = $("#setNginxPath").value.trim();
     const confDir = $("#setConfDir").value.trim();
+    const retentionRaw = $("#setBackupRetention").value.trim();
     if (!nginxPath || !confDir) {
       $("#setError").textContent = "请填写完整路径";
       $("#setError").hidden = false;
       return;
     }
+    const retention = retentionRaw === "" ? null : parseInt(retentionRaw, 10);
+    if (retention !== null && (isNaN(retention) || retention < 0 || retention > 100)) {
+      $("#setError").textContent = "保留份数必须为 0~100 的整数";
+      $("#setError").hidden = false;
+      return;
+    }
     try {
-      await api.saveSettings(nginxPath, confDir);
+      await api.saveSettings(nginxPath, confDir, retention);
       closeModal("#settingsModal");
       unlockBody();
       toast("设置已保存", "success");
@@ -374,34 +382,59 @@ const App = (() => {
   }
 
   /* ---------- 备份 ---------- */
+  function renderBackups(items, retention) {
+    const list = $("#backupList");
+    const tip = $("#backupRetentionTip");
+    if (tip) tip.textContent = retention > 0 ? `自动保留最近 ${retention} 份（可在设置中调整）` : "未启用自动清理（可在设置中调整）";
+    if (!items.length) {
+      list.innerHTML = '<p class="muted">暂无备份</p>';
+      return;
+    }
+    list.innerHTML = "";
+    items.forEach((b) => {
+      const row = document.createElement("div");
+      row.className = "backup-item";
+      const meta = document.createElement("div");
+      meta.innerHTML = '<span class="meta">' + escapeHtml(b.createdAt) + "</span>";
+      const files = document.createElement("span");
+      files.className = "files";
+      files.title = (b.files || []).join("\n");
+      files.textContent = (b.files || []).join(", ");
+      const actions = document.createElement("div");
+      actions.className = "backup-actions";
+      const btnRestore = document.createElement("button");
+      btnRestore.className = "btn btn-mini";
+      btnRestore.textContent = "回滚";
+      btnRestore.addEventListener("click", () => doRestore(b));
+      const btnDel = document.createElement("button");
+      btnDel.className = "btn btn-mini btn-danger";
+      btnDel.textContent = "删除";
+      btnDel.addEventListener("click", () => doDeleteBackup(b));
+      actions.appendChild(btnRestore);
+      actions.appendChild(btnDel);
+      row.appendChild(meta);
+      row.appendChild(files);
+      row.appendChild(actions);
+      list.appendChild(row);
+    });
+  }
+
   async function loadBackups() {
     try {
       const data = await api.backups();
-      const list = $("#backupList");
-      const items = data.backups || [];
-      if (!items.length) {
-        list.innerHTML = '<p class="muted">暂无备份</p>';
-        return;
-      }
-      list.innerHTML = "";
-      items.forEach((b) => {
-        const row = document.createElement("div");
-        row.className = "backup-item";
-        const meta = document.createElement("div");
-        meta.innerHTML = '<span class="meta">' + escapeHtml(b.createdAt) + "</span>";
-        const files = document.createElement("span");
-        files.className = "files";
-        files.title = (b.files || []).join("\n");
-        files.textContent = (b.files || []).join(", ");
-        const btn = document.createElement("button");
-        btn.className = "btn btn-mini";
-        btn.textContent = "回滚";
-        btn.addEventListener("click", () => doRestore(b));
-        row.appendChild(meta);
-        row.appendChild(files);
-        row.appendChild(btn);
-        list.appendChild(row);
-      });
+      renderBackups(data.backups || [], data.retention);
+    } catch (e) {
+      toast(e.message, "error");
+    }
+  }
+
+  async function doDeleteBackup(backup) {
+    const ok = await confirmDialog("删除备份 " + backup.id + "（" + backup.createdAt + "）？\n该操作不可恢复。");
+    if (!ok) return;
+    try {
+      const res = await api.deleteBackup(backup.id);
+      toast("已删除备份: " + backup.id, "success");
+      renderBackups(res.backups || [], res.retention != null ? res.retention : 7);
     } catch (e) {
       toast(e.message, "error");
     }

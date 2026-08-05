@@ -164,13 +164,52 @@ def timestamp_id() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
+# 自动保留备份份数（0 = 不自动清理）；main() 启动时从 settings 覆盖
+BACKUP_RETENTION = 7
+
+
+def prune_backups(backups_dir: str, retention: int) -> tuple:
+    """删除超过 retention 份的最旧备份目录，返回 (removed, failed)。
+    retention<=0 不清理。删除失败（如文件被占用）不阻塞备份，计入 failed。"""
+    if retention <= 0 or not os.path.isdir(backups_dir):
+        return 0, 0
+    names = [n for n in sorted(os.listdir(backups_dir), reverse=True)
+             if os.path.isdir(os.path.join(backups_dir, n)) and n.replace("_", "").isdigit()]
+    removed, failed = 0, 0
+    for old in names[retention:]:
+        d = os.path.join(backups_dir, old)
+        try:
+            shutil.rmtree(d)
+            if os.path.isdir(d):
+                failed += 1
+            else:
+                removed += 1
+        except OSError:
+            failed += 1
+    return removed, failed
+
+
+def delete_backup(backups_dir: str, backup_id: str) -> str:
+    """删除单个备份目录。返回 'ok' / 'not_found' / 'failed'。"""
+    d = os.path.join(backups_dir, backup_id)
+    if not os.path.isdir(d):
+        return "not_found"
+    try:
+        shutil.rmtree(d)
+    except OSError:
+        return "failed"
+    return "ok" if not os.path.isdir(d) else "failed"
+
+
 def make_backup(backups_dir: str, conf_dir: str, rel_path: str) -> str:
-    """备份单个文件到 backups/<时间戳>/<相对路径>，返回备份 id。"""
+    """备份单个文件到 backups/<时间戳>/<相对路径>，返回备份 id。
+    备份后自动清理超出 BACKUP_RETENTION 份的最旧备份。"""
     backup_id = timestamp_id()
     src = os.path.abspath(os.path.join(conf_dir, rel_path))
     dst = os.path.join(backups_dir, backup_id, rel_path)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     shutil.copy2(src, dst)
+    prune_backups(backups_dir, BACKUP_RETENTION)
     return backup_id
 
 
@@ -432,7 +471,30 @@ class Handler(BaseHTTPRequestHandler):
         self._ok({"path": rel, "content": content})
 
     def _api_backups(self) -> None:
-        self._ok({"backups": list_backups(self.data_dirs["backups"])})
+        self._ok({
+            "backups": list_backups(self.data_dirs["backups"]),
+            "retention": BACKUP_RETENTION,
+        })
+
+    def _api_backups_delete(self) -> None:
+        body = self._read_json_body()
+        backup_id = str(body.get("id", ""))
+        if not backup_id or not backup_id.replace("_", "").isdigit():
+            self._err(400, "id 参数非法")
+            return
+        result = delete_backup(self.data_dirs["backups"], backup_id)
+        if result == "not_found":
+            self._err(404, f"备份不存在: {backup_id}")
+            return
+        if result == "failed":
+            self._err(500, f"删除备份失败（文件可能被占用）: {backup_id}")
+            return
+        self._ok({
+            "ok": True,
+            "deleted": backup_id,
+            "backups": list_backups(self.data_dirs["backups"]),
+            "retention": BACKUP_RETENTION,
+        })
 
     def _api_logs_error(self, qs: dict) -> None:
         ctl = self._require_controller()
@@ -449,6 +511,7 @@ class Handler(BaseHTTPRequestHandler):
         self._ok({
             "nginxPath": self.settings.get("nginxPath"),
             "confDir": self.settings.get("confDir"),
+            "backupRetention": self.settings.get("backupRetention", BACKUP_RETENTION),
             "configured": self.settings.configured(),
         })
 
@@ -612,6 +675,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_proxies_remove()
         elif path == "/api/proxy-pool":
             self._api_proxy_pool_remove()
+        elif path == "/api/backups":
+            self._api_backups_delete()
         else:
             self._err(404, "接口不存在")
 
@@ -679,8 +744,26 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.settings.set("nginxPath", nginx_path)
         self.settings.set("confDir", conf_dir)
+        # 备份保留份数（可选，0=不自动清理；范围 0~100）
+        retention = body.get("backupRetention")
+        if retention is not None:
+            try:
+                r = int(retention)
+                if not (0 <= r <= 100):
+                    raise ValueError
+                self.settings.set("backupRetention", r)
+                global BACKUP_RETENTION
+                BACKUP_RETENTION = r
+            except (TypeError, ValueError):
+                self._err(400, "backupRetention 必须为 0~100 的整数")
+                return
         Handler.controller = create_controller(nginx_path, conf_dir)
-        self._ok({"ok": True, "nginxPath": nginx_path, "confDir": conf_dir})
+        self._ok({
+            "ok": True,
+            "nginxPath": nginx_path,
+            "confDir": conf_dir,
+            "backupRetention": self.settings.get("backupRetention", BACKUP_RETENTION),
+        })
 
     # ---- 代理管理 ----
 
@@ -904,6 +987,9 @@ def main() -> int:
     Handler.data_dirs = data_dirs
     Handler.settings = SettingsStore(data_dirs["root"])
     Handler.pool = TargetPoolStore(data_dirs["root"])
+    # 备份保留份数：settings 覆盖模块默认（0=不自动清理）
+    global BACKUP_RETENTION
+    BACKUP_RETENTION = int(Handler.settings.get("backupRetention", 7) or 7)
 
     nginx_path = args.nginx_path or Handler.settings.get("nginxPath")
     conf_dir = args.conf_dir or Handler.settings.get("confDir")
