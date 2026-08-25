@@ -40,12 +40,22 @@ class ProxyBlock:
         return [self.pp_values[i] for i in sorted(self.pp_lines)]
 
 
+def _strip_inline_comment(line: str) -> str:
+    """去掉行内注释：仅当 '#' 前为空白或行首时才视为注释起点，
+    避免误伤 proxy_pass URL 中的 '#'（如 http://host/path#frag）。"""
+    out = []
+    for i, ch in enumerate(line):
+        if ch == "#" and (i == 0 or line[i - 1] in " \t"):
+            break
+        out.append(ch)
+    return "".join(out)
+
+
 def _count_braces(lines: List[str], start: int) -> int:
     """从 start 行开始统计大括号平衡，返回块结束行索引（含）。"""
     depth = 0
     for i in range(start, len(lines)):
-        line = lines[i]
-        stripped = line.split("#", 1)[0]  # 去掉行内注释（简单处理）
+        stripped = _strip_inline_comment(lines[i])
         depth += stripped.count("{") - stripped.count("}")
         if depth <= 0:
             return i
@@ -318,10 +328,16 @@ class ProxyManager:
         block = next((b for b in self.blocks if b.path == path), None)
         if block is None:
             return {"ok": False, "error": f"代理不存在: {path}"}
-        # 连带删除 location 前的空行/缩进（保留其他内容）
+        # 删除整个 location 块，并连带清理前导空行；
+        # 若紧邻的上一行是该块的说明注释（# 开头且缩进不小于 location 行），一并删除。
         del_start = block.start
         while del_start > 0 and lines[del_start - 1].strip() == "":
             del_start -= 1
+        if del_start > 0:
+            prev = lines[del_start - 1]
+            loc_indent = len(lines[block.start]) - len(lines[block.start].lstrip())
+            if prev.lstrip().startswith("#") and (len(prev) - len(prev.lstrip())) >= loc_indent:
+                del_start -= 1
         del lines[del_start : block.end + 1]
         self.content = "\n".join(lines)
         return {"ok": True}

@@ -18,8 +18,8 @@
 - 服务绑定 `127.0.0.1`，未绑定 `0.0.0.0`，局域网不可达（见 `server.py` 中 `ThreadingHTTPServer(("127.0.0.1", port), Handler)`）。
 - 端口由 `--port` 指定或随机空闲端口，无固定可猜测端口。
 - 无 CORS 配置（未设置 `Access-Control-Allow-Origin`），浏览器跨站脚本无法读取响应（同源策略默认保护）。
-- **残余风险**：CSRF —— 任意本机网页可通过 `<form>` 向 `http://127.0.0.1:<port>` POST 触发「重载/重启」等操作（表单 POST 不触发 CORS 预检）。本工具未做 CSRF token。
-  - **加固建议**：① 所有写操作要求自定义请求头（如 `X-Requested-With: XMLHttpRequest`），跨站表单无法携带；② 敏感操作（stop/restart/restore）前端已有确认弹窗，可显著降低误触概率。建议后续在 v2 增加请求头校验中间件。
+  - **残余风险**：CSRF —— 任意本机网页可通过 `<form>` 向 `http://127.0.0.1:<port>` POST 触发「重载/重启」等操作（表单 POST 不触发 CORS 预检）。本工具未做 CSRF token。
+    - **加固建议**：① 所有写操作要求自定义请求头（如 `X-Requested-With: XMLHttpRequest`），跨站表单无法携带；② 敏感操作（stop/restart/restore）前端已有确认弹窗，可显著降低误触概率。**已落地**：所有写操作（POST/PUT/DELETE）已在 `server.py` 校验 `X-Requested-With: XMLHttpRequest`，前端 `api.js` 统一携带该头。
 
 ### 2. 路径穿越 — 受控 ✅
 
@@ -63,11 +63,11 @@
 
 | 优先级 | 事项 | 工作量 |
 |---|---|---|
-| P1 | 写操作增加 `X-Requested-With` 请求头校验（防本机 CSRF） | 小 |
+| P1 | 写操作增加 `X-Requested-With` 请求头校验（防本机 CSRF） | **已落地 ✓** |
 | P1 | 敏感操作（stop/restart/restore）二次确认（前端已做，后端可加 confirm 字段） | 小 |
 | P2 | 可选 token 鉴权（`--token` 参数或 settings 持久化） | 中 |
 | P3 | 对 `--port` 做范围校验，避免误绑特权端口需管理员权限 | 小 |
 
 ## 结论
 
-当前实现适合「个人本机管理 nginx」的定位，无已知高危漏洞。建议按 P1 优先补 CSRF 防护后，再考虑对外暴露场景。
+当前实现适合「个人本机管理 nginx」的定位，无已知高危漏洞。CSRF 防护（P1）已在 v1 落地（写操作校验 `X-Requested-With`），可安全用于本机场景；如需对外暴露，再考虑 token 鉴权（P2）。

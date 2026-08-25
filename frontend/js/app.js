@@ -6,13 +6,15 @@ const App = (() => {
   let currentFile = null;   // 当前编辑文件相对路径
   let statusTimer = null;   // 状态轮询
   let editing = false;      // 编辑器是否有未保存改动
+  let preview = false;      // 预览模式（未配置 nginx）
 
   /* ---------- 初始化 ---------- */
   async function init() {
     bindEvents();
     try {
       const s = await api.settings();
-      if (s.configured) {
+      preview = !!s.preview;
+      if (s.configured || s.preview) {
         enterDashboard();
       } else {
         showWizard();
@@ -22,6 +24,13 @@ const App = (() => {
       toast(e.message, "error");
     }
     startStatusPolling();
+  }
+
+  /* 预览模式拦截：未配置 nginx 时，写操作给出明确提示而非底层 409 */
+  function inPreviewGuard(actionName) {
+    if (!preview) return false;
+    toast("预览模式：请先在「设置」中配置 nginx 后再" + (actionName || "操作"), "error");
+    return true;
   }
 
   /* ---------- 视图切换 ---------- */
@@ -35,7 +44,11 @@ const App = (() => {
     $("#dashboard").hidden = false;
     refreshStatus();
     await Promise.all([loadTree(), loadBackups(), loadErrorLog()]);
-    toast("已加载 nginx 配置", "success");
+    if (preview) {
+      toast("预览模式：未配置 nginx，可浏览界面；点「设置」配置后可操作", "info");
+    } else {
+      toast("已加载 nginx 配置", "success");
+    }
   }
 
   /* ---------- 事件绑定 ---------- */
@@ -209,6 +222,12 @@ const App = (() => {
         return;
       }
       toast("设置已保存", "success");
+      if (preview) {
+        // 预览模式下配置 nginx 后，重载以退出预览、进入正常管理模式
+        toast("配置已生效，正在重新加载…", "success");
+        window.location.reload();
+        return;
+      }
       // 配置可能变化，刷新整个面板
       await loadTree();
       refreshStatus();
@@ -243,17 +262,20 @@ const App = (() => {
     try {
       const st = await api.status();
       const badge = $("#statusBadge");
-      if (st.running) {
+      if (preview) {
+        badge.textContent = "预览模式";
+        badge.className = "badge badge-unknown";
+      } else if (st.running) {
         badge.textContent = "运行中";
         badge.className = "badge badge-running";
       } else {
         badge.textContent = "已停止";
         badge.className = "badge badge-stopped";
       }
-      $("#stRunning").textContent = st.running ? "运行中" : "已停止";
+      $("#stRunning").textContent = preview ? "预览模式" : (st.running ? "运行中" : "已停止");
       $("#stVersion").textContent = st.version || "—";
       $("#stPid").textContent = st.pid || "—";
-      $("#stConf").textContent = st.confPath || "—";
+      $("#stConf").textContent = st.confPath || (preview ? "（预览模式）" : "—");
     } catch (e) {
       // 服务不可达时静默，保底显示
     }
@@ -340,6 +362,7 @@ const App = (() => {
 
   async function saveFile() {
     if (!currentFile) return;
+    if (inPreviewGuard("保存配置")) return;
     const choice = await confirmChoice("保存修改？备份仅在你显式确认时执行。", [
       { label: "保存并备份", value: "backup", primary: true },
       { label: "仅保存", value: "save" },
@@ -401,6 +424,7 @@ const App = (() => {
 
   /* ---------- 配置校验 ---------- */
   async function runConfigTest() {
+    if (inPreviewGuard("校验配置")) return;
     toast("正在执行 nginx -t …");
     try {
       const res = await api.testConfig();
@@ -413,6 +437,7 @@ const App = (() => {
 
   /* ---------- nginx 操作 ---------- */
   async function doNginxAction(action, msg) {
+    if (inPreviewGuard("操作 nginx 服务")) return;
     const ok = await confirmDialog(msg);
     if (!ok) return;
     try {
@@ -755,6 +780,7 @@ const App = (() => {
 
   async function doSwitchProxy(p, target) {
     if (!target || target === p.active) return;
+    if (inPreviewGuard("切换代理")) return;
     const ok = await confirmDialog("将代理 " + p.path + " 切换到 " + target + "？\n将自动备份并校验配置。");
     if (!ok) return;
     try {
@@ -780,6 +806,7 @@ const App = (() => {
   }
 
   async function doRemoveProxy(p) {
+    if (inPreviewGuard("删除代理")) return;
     const ok = await confirmDialog("删除代理 " + p.path + "？\n将移除整个 location 块并校验配置。");
     if (!ok) return;
     try {
@@ -804,6 +831,7 @@ const App = (() => {
   }
 
   async function confirmAddProxy() {
+    if (inPreviewGuard("添加代理")) return;
     const path = $("#addProxyPath").value.trim();
     const target = $("#addProxyTarget").value.trim();
     if (!path || !target) {
@@ -870,6 +898,7 @@ const App = (() => {
 
   async function saveTargets() {
     if (!editingProxy) return;
+    if (inPreviewGuard("编辑备选目标")) return;
     const rows = Array.from($$("#editTargetsList .targets-edit-row"));
     const targets = [];
     let activeIdx = 0;

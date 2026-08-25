@@ -43,6 +43,7 @@
 - 命令执行一律列表参数 + `shell=False`（防注入）。
 - 前端用户数据渲染必须 `textContent` 或 `escapeHtml()`（防 XSS）。
 - 前端资源**禁止引入 CDN/远程库**，一律相对路径。
+- 写操作（POST/PUT/DELETE）必须携带 `X-Requested-With: XMLHttpRequest` 头（`api.js` 已统一添加、`server.py` 校验），新增写接口务必保持该约束（防本机 CSRF）。
 
 ### 编码风格
 - 变量/函数小驼峰，常量全大写下划线；注释用中文解释"为什么"。

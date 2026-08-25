@@ -20,6 +20,7 @@ const api = {
 
   async _request(method, path, body) {
     const opts = { method, headers: {} };
+    opts.headers["X-Requested-With"] = "XMLHttpRequest"; // 写操作 CSRF 防护（后端校验）
     if (body !== undefined) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);

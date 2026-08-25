@@ -2,7 +2,7 @@
 """server.py — nginx 轻量网页管理端后端服务（Python 标准库，零第三方依赖）
 
 启动方式：
-    python backend/server.py [--port 8080] [--nginx-path <exe>] [--conf-dir <dir>]
+    python backend/server.py [--port 8080] [--nginx-path <exe>] [--conf-dir <dir>] [--preview]
 
 特性：
   - 仅监听 127.0.0.1；固定默认端口 8310（--port 可覆盖，被占用时自动换随机端口）
@@ -11,6 +11,8 @@
     否则首次使用（settings 未配置且未传参数）弹系统文件选择对话框让用户指定
     nginx 程序路径与配置目录（tkinter，打包 exe 内可用）；无图形环境时可
     用 --nginx-path / --conf-dir 参数预置，或用 API 配置。
+  - 预览模式（--preview，或无图形环境且未配置 nginx）：不要求 nginx 已安装/配置，
+    仅提供前端 UI 预览与接口调试；在「设置」中配置有效 nginx 后自动退出预览。详见 API.md。
   - 运行时数据存用户数据目录（Windows %APPDATA%，macOS ~/Library/Application
     Support，Linux ~/.config），避免 onefile 解压临时目录不可写。
 """
@@ -353,7 +355,7 @@ def pick_nginx_via_dialog() -> dict:
 # ---------- HTTP 处理 ----------
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "nginx-manager/0.1"
+    server_version = "nginx-manager/0.3.0"
     settings: SettingsStore = None  # type: ignore
     pool: TargetPoolStore = None  # type: ignore
     data_dirs: dict = {}
@@ -421,6 +423,11 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return self.controller
 
+    def _csrf_allowed(self) -> bool:
+        """写操作需携带 X-Requested-With: XMLHttpRequest（前端统一添加）。
+        跨站 <form>/<img> 无法设置自定义请求头，可防本机 CSRF 误触发启停/重载/重启。"""
+        return self.headers.get("X-Requested-With") == "XMLHttpRequest"
+
     # ---- 静态文件 ----
 
     def _serve_static(self, path: str) -> None:
@@ -467,14 +474,23 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_static(path)
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self._csrf_allowed():
+            self._err(403, "非法请求（缺少 X-Requested-With 头）")
+            return
         parsed = urlparse(self.path)
         self._route_api_post(parsed.path)
 
     def do_PUT(self) -> None:  # noqa: N802
+        if not self._csrf_allowed():
+            self._err(403, "非法请求（缺少 X-Requested-With 头）")
+            return
         parsed = urlparse(self.path)
         self._route_api_put(parsed.path)
 
     def do_DELETE(self) -> None:  # noqa: N802
+        if not self._csrf_allowed():
+            self._err(403, "非法请求（缺少 X-Requested-With 头）")
+            return
         parsed = urlparse(self.path)
         self._route_api_delete(parsed.path)
 
@@ -522,6 +538,10 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def _api_config(self) -> None:
+        if self.controller is None:
+            # 预览模式（未配置 nginx）：返回空树，前端渲染空状态而非报错
+            self._ok({"tree": [], "included": [], "preview": True})
+            return
         ctl = self._require_controller()
         if ctl is None:
             return
@@ -578,6 +598,10 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def _api_logs_error(self, qs: dict) -> None:
+        if self.controller is None:
+            # 预览模式：无 nginx，无错误日志可读
+            self._ok({"logPath": None, "content": "（预览模式：未配置 nginx，暂无错误日志）"})
+            return
         ctl = self._require_controller()
         if ctl is None:
             return
@@ -595,6 +619,7 @@ class Handler(BaseHTTPRequestHandler):
             "port": int(self.settings.get("port", 0) or 0) or DEFAULT_PORT,
             "backupRetention": self.settings.get("backupRetention", BACKUP_RETENTION),
             "configured": self.settings.configured(),
+            "preview": Handler.controller is None,
         })
 
     # ---- API: POST ----
@@ -896,9 +921,35 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return ProxyManager(conf_path)
 
-    def _proxy_test_or_rollback(self, pm, original, proxy_payload=None):
-        """执行 nginx -t；失败则恢复原文并返回错误响应。成功返回 None（继续走 _ok）。"""
-        code, result = self.controller.test_config()
+    def _proxy_apply(self, pm, mutate, path=None, extra=None):
+        """统一执行代理写变更：mutate(pm) 返回 {ok, ...}。
+
+        - mutate 失败：按错误语义发 4xx 响应，返回 True（调用方直接 return）。
+        - 内容无变化（pm.content 未改变）：跳过备份与 nginx -t，直接发成功响应
+          （backupId 为 None），避免无意义的冗余备份。
+        - 内容有变化：先备份 → commit → nginx -t 校验；校验失败回滚原文并回 409；
+          成功发成功响应。
+        返回 True 表示响应已发送，调用方应 return。"""
+        original = pm.content
+        res = mutate(pm)
+        if not res.get("ok"):
+            err = res.get("error", "操作失败")
+            status = 400
+            if "不存在" in err:
+                status = 404
+            elif "备选" in err or "校验" in err:
+                status = 409
+            self._err(status, err)
+            return True
+        if pm.content == original:
+            # 无实际变化（如切换到已激活目标、备选列表与当前一致），不备份不校验
+            proxy = next((p for p in pm.list_proxies() if p["path"] == path), None) if path else None
+            self._ok({"ok": True, "proxy": proxy, "backupId": None,
+                      "test": {"ok": True, "output": "配置无变化，未做改动"}, **(extra or {})})
+            return True
+        backup_id = make_backup(self.data_dirs["backups"], self.controller.conf_dir, "nginx.conf")
+        pm.commit()
+        _code, result = self.controller.test_config()
         if not result.get("ok"):
             pm.restore(original)
             self._send_json(409, {
@@ -906,10 +957,16 @@ class Handler(BaseHTTPRequestHandler):
                 "detail": result.get("output", ""),
                 "test": result,
             })
-            return None
-        return result
+            return True
+        proxy = next((p for p in pm.list_proxies() if p["path"] == path), None) if path else None
+        self._ok({"ok": True, "proxy": proxy, "backupId": backup_id, "test": result, **(extra or {})})
+        return True
 
     def _api_proxies_get(self) -> None:
+        if self.controller is None:
+            # 预览模式：无 nginx.conf，返回空代理列表
+            self._ok({"proxies": [], "sourceFile": None, "preview": True})
+            return
         pm = self._proxy_manager()
         if pm is None:
             return
@@ -922,18 +979,11 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_json_body()
         path = str(body.get("path", ""))
         target = str(body.get("target", ""))
-        original = pm.content
-        # 修改前先备份原始配置
-        backup_id = make_backup(self.data_dirs["backups"], self.controller.conf_dir, "nginx.conf")
-        res = pm.add(path, target)
-        if not res.get("ok"):
-            self._err(400, res.get("error", "添加代理失败"))
+
+        def mutate(pm):
+            return pm.add(path, target)
+        if self._proxy_apply(pm, mutate, path):
             return
-        pm.commit()
-        test = self._proxy_test_or_rollback(pm, original)
-        if test is None:
-            return
-        self._ok({"ok": True, "proxy": res["proxy"], "backupId": backup_id, "test": test})
 
     def _api_proxies_switch(self) -> None:
         pm = self._proxy_manager()
@@ -942,9 +992,6 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_json_body()
         path = str(body.get("path", ""))
         target = str(body.get("target", ""))
-        original = pm.content
-        backup_id = make_backup(self.data_dirs["backups"], self.controller.conf_dir, "nginx.conf")
-
         # 若 target 不在该代理备选中（如从目标池选的），先自动追加为备选再切换
         proxy_cur = next((p for p in pm.list_proxies() if p["path"] == path), None)
         if proxy_cur is None:
@@ -957,18 +1004,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._err(409, res.get("error", "自动加入备选失败"))
                 return
 
-        res = pm.switch(path, target)
-        if not res.get("ok"):
-            err = res.get("error", "")
-            status = 404 if "不存在" in err else (409 if "备选" in err else 400)
-            self._err(status, err)
+        def mutate(pm):
+            return pm.switch(path, target)
+        if self._proxy_apply(pm, mutate, path):
             return
-        pm.commit()
-        test = self._proxy_test_or_rollback(pm, original)
-        if test is None:
-            return
-        proxy = next((p for p in pm.list_proxies() if p["path"] == path), None)
-        self._ok({"ok": True, "proxy": proxy, "backupId": backup_id, "test": test})
 
     # ---- 目标地址池 ----
 
@@ -1024,20 +1063,11 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(targets, list):
             self._err(400, "targets 必须为数组")
             return
-        original = pm.content
-        backup_id = make_backup(self.data_dirs["backups"], self.controller.conf_dir, "nginx.conf")
-        res = pm.update_targets(path, targets)
-        if not res.get("ok"):
-            err = res.get("error", "")
-            status = 404 if "不存在" in err else 400
-            self._err(status, err)
+
+        def mutate(pm):
+            return pm.update_targets(path, targets)
+        if self._proxy_apply(pm, mutate, path):
             return
-        pm.commit()
-        test = self._proxy_test_or_rollback(pm, original)
-        if test is None:
-            return
-        proxy = next((p for p in pm.list_proxies() if p["path"] == path), None)
-        self._ok({"ok": True, "proxy": proxy, "backupId": backup_id, "test": test})
 
     def _api_proxies_remove(self) -> None:
         pm = self._proxy_manager()
@@ -1045,18 +1075,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         body = self._read_json_body()
         path = str(body.get("path", ""))
-        original = pm.content
-        backup_id = make_backup(self.data_dirs["backups"], self.controller.conf_dir, "nginx.conf")
-        res = pm.remove(path)
-        if not res.get("ok"):
-            err = res.get("error", "")
-            self._err(404 if "不存在" in err else 400, err)
+
+        def mutate(pm):
+            return pm.remove(path)
+        if self._proxy_apply(pm, mutate, path, extra={"deleted": path}):
             return
-        pm.commit()
-        test = self._proxy_test_or_rollback(pm, original)
-        if test is None:
-            return
-        self._ok({"ok": True, "deleted": path, "backupId": backup_id, "test": test})
 
     # ---- 日志 ----
 
@@ -1097,11 +1120,25 @@ def find_workspace_nginx() -> dict:
     return {}
 
 
+def _tkinter_available() -> bool:
+    """检测当前环境是否可导入 tkinter（无图形环境/CI/服务器返回 False）。"""
+    try:
+        import tkinter  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="nginx 轻量网页管理端")
     parser.add_argument("--port", type=int, default=None, help=f"监听端口（缺省 {DEFAULT_PORT}）")
     parser.add_argument("--nginx-path", default=None, help="nginx 可执行文件路径（跳过首次选择对话框）")
     parser.add_argument("--conf-dir", default=None, help="nginx 配置目录（跳过首次选择对话框）")
+    parser.add_argument(
+        "--preview", action="store_true",
+        help="预览模式：不要求 nginx 已安装/配置，仅提供前端 UI 预览与接口调试；"
+             "可通过「设置」填写 nginxPath/confDir 后重载以退出预览",
+    )
     args = parser.parse_args()
 
     data_dirs = ensure_data_dirs()
@@ -1116,30 +1153,40 @@ def main() -> int:
     lock_path = os.path.join(data_dirs["root"], "instance.lock")
     killed = kill_existing_instance(lock_path)
 
-    nginx_path = args.nginx_path or Handler.settings.get("nginxPath")
-    conf_dir = args.conf_dir or Handler.settings.get("confDir")
+    # 预览模式：显式 --preview，或当前无图形环境（tkinter 不可用，如服务器/CI 本地调试）。
+    # 但若 settings 已配置有效 nginx，则仍以正常模式运行——
+    # 否则「预览中配置 nginx 后重启服务」会因 --preview 仍在 argv 而丢回 controller=None。
+    preview_requested = bool(args.preview) or (not _tkinter_available())
+    already_configured = bool(Handler.settings.get("nginxPath") and Handler.settings.get("confDir"))
+    if preview_requested and not already_configured:
+        Handler.controller = None
+        print("[预览模式] 未配置 nginx（controller=None），仅提供前端 UI 预览与接口调试。")
+        print("            如需管理真实配置，请在「设置」中填写 nginx 路径与配置目录。")
+    else:
+        nginx_path = args.nginx_path or Handler.settings.get("nginxPath")
+        conf_dir = args.conf_dir or Handler.settings.get("confDir")
 
-    if not nginx_path or not conf_dir:
-        # 开发默认：工作区自带 nginx-1.30.4（测试用）
-        ws = find_workspace_nginx()
-        if ws:
-            nginx_path = ws["nginxPath"]
-            conf_dir = ws["confDir"]
-            print(f"[默认] 使用工作区 nginx: {nginx_path}")
-            print(f"      confDir: {conf_dir}")
-        else:
-            print("[首次使用] 需要指定 nginx 路径与配置目录…")
-            picked = pick_nginx_via_dialog()
-            if not picked:
-                print("未完成选择，退出。可用 --nginx-path / --conf-dir 参数指定，或重试。")
-                return 1
-            nginx_path = picked["nginxPath"]
-            conf_dir = picked["confDir"]
-            Handler.settings.set("nginxPath", nginx_path)
-            Handler.settings.set("confDir", conf_dir)
-            print(f"已保存配置: nginx={nginx_path}\n            confDir={conf_dir}")
+        if not nginx_path or not conf_dir:
+            # 开发默认：工作区自带 nginx-1.30.4（测试用）
+            ws = find_workspace_nginx()
+            if ws:
+                nginx_path = ws["nginxPath"]
+                conf_dir = ws["confDir"]
+                print(f"[默认] 使用工作区 nginx: {nginx_path}")
+                print(f"      confDir: {conf_dir}")
+            else:
+                print("[首次使用] 需要指定 nginx 路径与配置目录…")
+                picked = pick_nginx_via_dialog()
+                if not picked:
+                    print("未完成选择，退出。可用 --nginx-path / --conf-dir 参数指定，或重试。")
+                    return 1
+                nginx_path = picked["nginxPath"]
+                conf_dir = picked["confDir"]
+                Handler.settings.set("nginxPath", nginx_path)
+                Handler.settings.set("confDir", conf_dir)
+                print(f"已保存配置: nginx={nginx_path}\n            confDir={conf_dir}")
 
-    Handler.controller = create_controller(nginx_path, conf_dir)
+        Handler.controller = create_controller(nginx_path, conf_dir)
     # 端口优先级：--port > settings.port > DEFAULT_PORT
     prefer_port = args.port or int(Handler.settings.get("port", 0) or 0) or DEFAULT_PORT
     port = find_free_port(prefer_port)

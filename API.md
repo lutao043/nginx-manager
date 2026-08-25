@@ -12,6 +12,33 @@
 - 状态码：`200` 成功；`400` 参数错误；`404` 资源不存在；`409` 操作冲突（如校验失败拒绝保存）；`500` 服务端错误。
 - 前端所有用户可见文案用中文；本文档中的英文 key 为程序内唯一标识，不可翻译。
 
+## 启动参数与运行模式
+
+服务仅监听 `127.0.0.1`，启动命令：
+
+```
+python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [--preview]
+```
+
+| 参数 | 说明 |
+|---|---|
+| `--port` | 监听端口，缺省 `8310`（被占用时自动换随机空闲端口） |
+| `--nginx-path` | nginx 可执行文件绝对路径，跳过首次选择对话框 |
+| `--conf-dir` | nginx 配置目录（含 `nginx.conf`），跳过首次选择对话框 |
+| `--preview` | 预览模式：不要求 nginx 已安装/配置，仅提供前端 UI 预览与接口调试 |
+
+**运行模式判定（`main()`）：**
+
+1. **正常模式**：未指定 `--preview` 且当前环境有图形界面（tkinter 可用）。按以下顺序确定 nginx 路径：
+   - `--nginx-path` / `--conf-dir` 参数 → 否则 `settings.json` 中的 `nginxPath` / `confDir` → 否则探测工作区 `nginx-1.30.4/`（开发测试用）→ 否则弹系统文件选择对话框；若对话框取消则退出（返回 1）。
+2. **预览模式**：显式 `--preview` **且** `settings.json` 尚未配置有效 nginx；或当前环境无图形界面（tkinter 不可用，如服务器 / CI 本地调试）**且**未配置 nginx。
+   - 预览模式下 `Handler.controller = None`，跳过 nginx 探测与选择对话框，服务照常启动、前端正常渲染。
+   - **已配置有效 nginx 时即使带 `--preview` 也走正常模式**——避免「预览中配置 nginx 后重启服务」因 `--preview` 残留而重新丢回 `controller=None`。
+   - 预览模式不是只读沙盒：写操作（启停 / 重载 / 保存配置 / 代理增删切换）会因无 controller 返回 `409`；目标地址池（proxy-pool）不依赖 nginx，可正常使用。
+   - 退出预览：在「设置」中填写有效的 nginx 路径与配置目录并保存，前端自动重载页面进入正常管理模式。
+
+**`preview` 标志来源**：后端 `/api/settings` 的 `preview` 字段 = `Handler.controller is None`，前端据此决定直接进入主界面（不弹首次向导）并展示「预览模式」徽章。
+
 ## 资源模型
 
 ### Settings（设置，持久化到用户数据目录 settings.json）
@@ -79,6 +106,7 @@
 
 - `tree`：根为配置目录下的文件/目录列表，仅包含**实际被引用的文件**（nginx.conf + include 到的 .conf），避免展示无关文件；目录节点展示为可展开，其 children 仅含被引用文件。
 - `included`：所有被 include 的文件相对路径（用于快速定位）。
+- **预览模式**：`controller is None` 时返回 `{"tree": [], "included": [], "preview": true}`（空树），前端渲染「未找到配置文件」空状态而非报错。
 
 ### GET /api/config/file?path=nginx.conf
 
@@ -273,6 +301,7 @@
 ```
 
 - `logPath`：自动定位（confDir 同级 logs/error.log）；文件不存在时 `content` 为空字符串。
+- **预览模式**：`controller is None` 时返回 `{"logPath": null, "content": "（预览模式：未配置 nginx，暂无错误日志）"}`。
 
 ### GET /api/settings
 
@@ -281,12 +310,13 @@
 **成功响应 200**
 
 ```json
-{ "nginxPath": "C:/nginx/nginx.exe", "confDir": "C:/nginx/conf", "port": 8310, "backupRetention": 7, "configured": true }
+{ "nginxPath": "C:/nginx/nginx.exe", "confDir": "C:/nginx/conf", "port": 8310, "backupRetention": 7, "configured": true, "preview": false }
 ```
 
 - `configured`：nginxPath 与 confDir 是否均已配置。
 - `port`：当前监听端口（settings 未配置时返回默认 8310）。
 - `backupRetention`：自动保留备份份数（默认 7；0 表示不自动清理）。
+- `preview`：是否预览模式（`Handler.controller is None`，即未配置 nginx）。前端据此直接进入主界面并展示「预览模式」徽章；为 `true` 时 `nginxPath`/`confDir` 为 null。
 
 ### PUT /api/settings
 
@@ -371,6 +401,7 @@
 ```
 
 - `sourceFile`：解析来源文件路径（相对配置目录）。
+- **预览模式**：`controller is None` 时返回 `{"proxies": [], "sourceFile": null, "preview": true}`（空列表），前端渲染「暂无代理」空状态。
 
 ### POST /api/proxies
 
@@ -564,3 +595,6 @@
   「是否立即重载 nginx 配置？」（是/否）——点是调 `POST /api/nginx/reload`，点否仅保存配置不重载。
 - **代理搜索过滤**：代理管理页顶部提供搜索框，按代理路径（`path`）、目标地址（`targets`）实时过滤列表；
   输入即过滤（不触发后端请求），空关键词恢复全量列表；提供「清除搜索」按钮一键清空关键词并恢复全量。
+- **预览模式**：`GET /api/settings` 返回 `preview: true` 时，前端跳过首次配置向导直接进入主界面，状态徽章显示「预览模式」；
+  写操作（启动/停止/重载/重启/校验、保存配置、代理增删切换、编辑备选）统一拦截并提示「请先在设置中配置 nginx」；
+  在「设置」中填好 nginx 路径并保存后，前端自动 `reload()` 退出预览进入正常管理模式。

@@ -120,3 +120,15 @@ function bindModalClose(id, onClose) {
   mask.querySelectorAll("[data-close]").forEach((el) => el.addEventListener("click", close));
   mask.addEventListener("click", (e) => { if (e.target === mask) close(); });
 }
+
+/* ── 主题切换 ── */
+(function initThemeSwitcher() {
+  const sel = document.getElementById("themeSelect");
+  if (!sel) return;
+  const current = document.body.getAttribute("data-theme") || "emerald-dark";
+  sel.value = current;
+  sel.addEventListener("change", () => {
+    document.body.setAttribute("data-theme", sel.value);
+    localStorage.setItem("nm-theme", sel.value);
+  });
+})();

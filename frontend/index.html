@@ -4,19 +4,48 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>nginx 管理端</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
+<script>
+  // 立即应用保存的主题，避免闪烁（必须在 <body> 之后，此时 document.body 已存在）
+  (function(){
+    var t = localStorage.getItem('nm-theme') || 'emerald-dark';
+    document.body.setAttribute('data-theme', t);
+  })();
+</script>
 <div id="app" class="layout">
 
   <!-- 顶部栏 -->
   <header class="topbar">
     <div class="brand">
-      <span class="logo">◧</span>
-      <span class="brand-title">nginx 管理端</span>
+      <div class="logo">
+        <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round">
+          <path d="M4 7h16M4 12h16M4 17h10" stroke="white" opacity="0.9"/>
+          <circle cx="19" cy="17" r="2" fill="white" opacity="0.9"/>
+        </svg>
+      </div>
+      <span class="brand-title">nginx manager</span>
       <span id="statusBadge" class="badge badge-unknown">检测中…</span>
     </div>
     <div class="topbar-actions">
+      <select id="themeSelect" class="theme-select" title="切换主题">
+        <optgroup label="🌙 夜间模式">
+          <option value="emerald-dark">🌿 翡翠 · 夜</option>
+          <option value="ocean-dark">🌊 海洋 · 夜</option>
+          <option value="amber-dark">🔥 琥珀 · 夜</option>
+          <option value="rose-dark">🌸 玫瑰 · 夜</option>
+        </optgroup>
+        <optgroup label="☀️ 日间模式">
+          <option value="emerald-light">🌿 翡翠 · 日</option>
+          <option value="ocean-light">🌊 海洋 · 日</option>
+          <option value="amber-light">🔥 琥珀 · 日</option>
+          <option value="rose-light">🌸 玫瑰 · 日</option>
+        </optgroup>
+      </select>
       <button id="btnSettings" class="btn btn-ghost" type="button">设置</button>
     </div>
   </header>
@@ -49,10 +78,32 @@
 
       <!-- 页签 -->
       <div class="tabs">
-        <button class="tab active" id="tabConfig" type="button">配置文件</button>
-        <button class="tab" id="tabProxies" type="button">代理管理</button>
+        <div class="tabs-inner">
+          <button class="tab active" id="tabConfig" type="button">配置文件</button>
+          <button class="tab" id="tabProxies" type="button">代理管理</button>
+        </div>
       </div>
 
+      <!-- 状态栏（通栏，固定在视图顶部，不随内容滚动） -->
+      <div class="status-bar">
+        <div class="status-bar-grid">
+          <div class="status-bar-item"><span class="k">状态</span><span class="v" id="stRunning">—</span></div>
+          <div class="status-bar-item"><span class="k">版本</span><span class="v" id="stVersion">—</span></div>
+          <div class="status-bar-item"><span class="k">PID</span><span class="v" id="stPid">—</span></div>
+          <div class="status-bar-item config-path"><span class="k">配置文件</span><span class="v mono" id="stConf">—</span></div>
+        </div>
+        <div class="status-bar-actions">
+          <button id="btnStart" class="btn btn-mini" type="button">启动</button>
+          <button id="btnStop" class="btn btn-mini" type="button">停止</button>
+          <button id="btnReload" class="btn btn-mini" type="button">重载</button>
+          <button id="btnRestart" class="btn btn-mini btn-primary" type="button">重启</button>
+          <button id="btnTest" class="btn btn-mini" type="button">nginx -t</button>
+        </div>
+        <div class="test-result" id="testResult" hidden></div>
+      </div>
+
+      <!-- 视图区 -->
+      <div class="view-area">
       <!-- 配置文件视图 -->
       <div id="viewConfig" class="dashboard-body">
       <!-- 左侧：配置文件树 -->
@@ -66,25 +117,6 @@
 
       <!-- 右侧：内容区 -->
       <section class="content">
-
-        <!-- 状态面板 -->
-        <div class="panel status-panel">
-          <div class="panel-title">运行状态</div>
-          <div class="status-grid">
-            <div class="status-item"><span class="k">状态</span><span class="v" id="stRunning">—</span></div>
-            <div class="status-item"><span class="k">版本</span><span class="v" id="stVersion">—</span></div>
-            <div class="status-item"><span class="k">PID</span><span class="v" id="stPid">—</span></div>
-            <div class="status-item"><span class="k">配置文件</span><span class="v mono" id="stConf">—</span></div>
-          </div>
-          <div class="status-actions">
-            <button id="btnStart" class="btn" type="button">启动</button>
-            <button id="btnStop" class="btn" type="button">停止</button>
-            <button id="btnReload" class="btn" type="button">重载</button>
-            <button id="btnRestart" class="btn btn-primary" type="button">重启</button>
-            <button id="btnTest" class="btn" type="button">校验配置 (nginx -t)</button>
-          </div>
-          <div class="test-result" id="testResult" hidden></div>
-        </div>
 
         <!-- 编辑器 -->
         <div class="panel editor-panel" hidden id="editorPanel">
@@ -163,6 +195,7 @@
           <div class="test-result" id="proxyTestResult" hidden></div>
         </section>
       </div><!-- /viewProxies -->
+      </div><!-- /view-area -->
     </div>
   </div>
 
