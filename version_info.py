@@ -4,8 +4,8 @@
 # https://learn.microsoft.com/en-us/windows/win32/menurc/versioninfo-resource
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(0, 3, 0, 0),
-    prodvers=(0, 3, 0, 0),
+    filevers=(0, 3, 1, 0),
+    prodvers=(0, 3, 1, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -21,11 +21,11 @@ VSVersionInfo(
           [
             StringStruct(u'CompanyName', u'nginx-manager'),
             StringStruct(u'FileDescription', u'nginx lightweight web manager'),
-            StringStruct(u'FileVersion', u'0.3.0'),
+            StringStruct(u'FileVersion', u'0.3.1'),
             StringStruct(u'InternalName', u'nginx-manager'),
             StringStruct(u'OriginalFilename', u'nginx-manager.exe'),
             StringStruct(u'ProductName', u'nginx-manager'),
-            StringStruct(u'ProductVersion', u'0.3.0'),
+            StringStruct(u'ProductVersion', u'0.3.1'),
             StringStruct(u'Language', u'Chinese (Simplified)')
           ]
         )
