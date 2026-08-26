@@ -22,7 +22,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nginx-manager-windows
-          path: dist/nginx-manager.exe
+          path: dist/nginx-manager-v*.exe
 
   release:
     needs: build-windows
@@ -37,9 +37,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Create release with Windows exe
+          # Find the exe file with version number
+          EXE_FILE=$(ls windows/nginx-manager-v*.exe | head -1)
           gh release create "${{ github.ref_name }}" \
             --repo "${{ github.repository }}" \
             --title "nginx-manager ${{ github.ref_name }}" \
             --generate-notes \
-            ./windows/nginx-manager.exe
+            "$EXE_FILE"

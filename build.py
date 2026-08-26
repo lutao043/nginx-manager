@@ -78,7 +78,14 @@ def main() -> int:
     finally:
         os.remove, os.unlink = _orig_remove, _orig_unlink
 
-    exe = os.path.join(dist_dir, "nginx-manager.exe")
+    # 产物名称带版本号：nginx-manager-v0.3.0.exe（或无后缀的 macOS/Linux）
+    exe = None
+    for f in os.listdir(dist_dir):
+        if f.startswith("nginx-manager-v") and (f.endswith(".exe") or not f.endswith(".exe")):
+            exe = os.path.join(dist_dir, f)
+            break
+    if not exe:
+        exe = os.path.join(dist_dir, "nginx-manager.exe")  # fallback
     if os.path.isfile(exe):
         size_mb = os.path.getsize(exe) / 1024 / 1024
         print(f"\n[build] OK: {exe} ({size_mb:.1f} MB)")
