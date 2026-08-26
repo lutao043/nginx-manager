@@ -14,8 +14,6 @@ APP_NAME = "nginx-manager"
 # PyInstaller 执行 spec 时提供 SPECPATH（脚本所在目录），__file__ 不可用
 ROOT = os.path.abspath(SPECPATH)
 
-from PyInstaller.utils.hooks import collect_submodules
-
 a = Analysis(
     [os.path.join(ROOT, "backend", "server.py")],
     pathex=[os.path.join(ROOT, "backend")],
@@ -23,13 +21,16 @@ a = Analysis(
     datas=[(os.path.join(ROOT, "frontend"), "frontend")],
     # tkinter 是标准库，但 PyInstaller 静态分析不会自动收齐 _tkinter.pyd
     # 与 tcl/tk DLL；用 collect_submodules 显式抓全所有子模块
-    hiddenimports=collect_submodules("tkinter"),
+    hiddenimports=[],
     hookspath=[],
     runtime_hooks=[],
-    excludes=[],
+    excludes=["tkinter", "_tkinter", "tcl", "tk"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
+
+import sys as _sys
+_ext = ".exe" if _sys.platform == "win32" else ""
 
 exe = EXE(
     pyz,
@@ -37,15 +38,16 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name=APP_NAME,
+    name=APP_NAME + _ext,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=False,          # GUI 程序，不弹出黑窗口
+    console=True,           # 服务器程序，保留控制台输出
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
     icon=None,
+    version=os.path.join(ROOT, "version_info.py") if _sys.platform == "win32" else None,
 )
