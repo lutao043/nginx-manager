@@ -24,6 +24,8 @@ const App = (() => {
       toast(e.message, "error");
     }
     startStatusPolling();
+    // 首次入场动画播完后摘掉 first-load 标记，之后的搜索/切页签不再重放动画
+    setTimeout(() => document.body.classList.remove("first-load"), 700);
   }
 
   /* 预览模式拦截：未配置 nginx 时，写操作给出明确提示而非底层 409 */
@@ -84,14 +86,15 @@ const App = (() => {
     $("#btnAddProxy").addEventListener("click", openAddProxy);
     $("#btnConfirmAddProxy").addEventListener("click", confirmAddProxy);
     $("#btnSaveTargets").addEventListener("click", saveTargets);
-    // 代理搜索：输入实时过滤，清除按钮恢复全量
-    $("#proxySearch").addEventListener("input", (e) => {
+    // 代理搜索：150ms 防抖过滤，避免每敲一个字符全量重建列表（低端机掉帧源）
+    const onProxySearchInput = (e) => {
       proxySearch = e.target.value;
       renderProxyList(filterProxies());
       $("#btnClearProxySearch").hidden = !proxySearch.trim();
       const cnt = document.getElementById("proxyCount");
       if (cnt) cnt.textContent = proxySearch ? `（${filterProxies().length}/${allProxies.length}）` : `（${allProxies.length}）`;
-    });
+    };
+    $("#proxySearch").addEventListener("input", debounce(onProxySearchInput, 150));
     $("#btnClearProxySearch").addEventListener("click", () => {
       proxySearch = "";
       $("#proxySearch").value = "";
@@ -258,21 +261,22 @@ const App = (() => {
     statusTimer = setInterval(refreshStatus, 10000);
   }
 
+  let lastStatusKey = null; // 上次状态 key，避免每 10s 无谓重写 DOM 重启动画
+
   async function refreshStatus() {
     try {
       const st = await api.status();
       const badge = $("#statusBadge");
-      if (preview) {
-        badge.textContent = "预览模式";
-        badge.className = "badge badge-unknown";
-      } else if (st.running) {
-        badge.textContent = "运行中";
-        badge.className = "badge badge-running";
-      } else {
-        badge.textContent = "已停止";
-        badge.className = "badge badge-stopped";
+      let key, text;
+      if (preview) { key = "preview"; text = "预览模式"; }
+      else if (st.running) { key = "running"; text = "运行中"; }
+      else { key = "stopped"; text = "已停止"; }
+      if (key !== lastStatusKey) {
+        lastStatusKey = key;
+        badge.textContent = text;
+        badge.className = "badge badge-" + (key === "running" ? "running" : key === "stopped" ? "stopped" : "unknown");
+        $("#stRunning").textContent = text;
       }
-      $("#stRunning").textContent = preview ? "预览模式" : (st.running ? "运行中" : "已停止");
       $("#stVersion").textContent = st.version || "—";
       $("#stPid").textContent = st.pid || "—";
       $("#stConf").textContent = st.confPath || (preview ? "（预览模式）" : "—");

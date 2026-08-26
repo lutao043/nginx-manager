@@ -355,7 +355,7 @@ def pick_nginx_via_dialog() -> dict:
 # ---------- HTTP 处理 ----------
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "nginx-manager/0.3.1"
+    server_version = "nginx-manager/0.3.2"
     settings: SettingsStore = None  # type: ignore
     pool: TargetPoolStore = None  # type: ignore
     data_dirs: dict = {}

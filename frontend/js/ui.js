@@ -4,6 +4,15 @@
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
+/* 防抖：连续调用只执行最后一次（搜索输入等高频事件） */
+function debounce(fn, ms) {
+  let t = null;
+  return function (...args) {
+    clearTimeout(t);
+    t = setTimeout(() => fn.apply(this, args), ms);
+  };
+}
+
 /* 提示条 */
 let toastTimer = null;
 function toast(msg, type) {
