@@ -8,10 +8,16 @@
 """
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import subprocess
 import sys
+
+# Windows CI (cp1252) 遇到中文 print 会 UnicodeEncodeError，强制 stdout/stderr 用 UTF-8
+if sys.platform == "win32":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SPEC = os.path.join(ROOT, "nginx-manager.spec")
@@ -74,10 +80,10 @@ def main() -> int:
 
     exe = os.path.join(dist_dir, "nginx-manager.exe")
     if os.path.isfile(exe):
-        print(f"\n[build] 打包成功: {exe}")
-        print("双击运行，首次启动会弹出文件选择窗口指定 nginx 路径。")
+        size_mb = os.path.getsize(exe) / 1024 / 1024
+        print(f"\n[build] OK: {exe} ({size_mb:.1f} MB)")
         return 0
-    print("\n[build] 打包完成，但未找到预期产物，请检查上方日志。")
+    print("\n[build] FAILED: expected output not found, check logs above.")
     return 1
 
 
