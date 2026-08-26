@@ -9,21 +9,20 @@
 不依赖程序所在目录，保证 onefile 解压临时目录可写性问题不出现。
 """
 import os
-
 import re as _re
+import sys as _sys
 
 APP_NAME = "nginx-manager"
-APP_VERSION = "0.3.0"
 # PyInstaller 执行 spec 时提供 SPECPATH（脚本所在目录），__file__ 不可用
 ROOT = os.path.abspath(SPECPATH)
 
-# 从 server.py 提取版本号（如果有），否则用上面的默认值
+# 版本号唯一来源：backend/server.py 的 server_version
 _server_py = os.path.join(ROOT, "backend", "server.py")
-if os.path.isfile(_server_py):
-    with open(_server_py, encoding="utf-8") as _f:
-        _m = _re.search(r'server_version\s*=\s*["\']nginx-manager/([\d.]+)["\']', _f.read())
-        if _m:
-            APP_VERSION = _m.group(1)
+APP_VERSION = "0.0.0"  # fallback，正常不会用到
+with open(_server_py, encoding="utf-8") as _f:
+    _m = _re.search(r'server_version\s*=\s*["\']nginx-manager/([\d.]+)["\']', _f.read())
+    if _m:
+        APP_VERSION = _m.group(1)
 
 a = Analysis(
     [os.path.join(ROOT, "backend", "server.py")],

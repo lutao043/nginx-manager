@@ -22,3 +22,4 @@ nginx-1.30.4/
 # IDE
 .idea/
 .vscode/
+version_info.py
