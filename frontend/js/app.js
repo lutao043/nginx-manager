@@ -86,6 +86,11 @@ const App = (() => {
     $("#btnAddProxy").addEventListener("click", openAddProxy);
     $("#btnConfirmAddProxy").addEventListener("click", confirmAddProxy);
     $("#btnSaveTargets").addEventListener("click", saveTargets);
+    // 查看/更改当前管理的配置文件地址（打开设置弹窗并定位到配置目录输入框）
+    $("#btnChangeConf").addEventListener("click", () => {
+      openSettings();
+      setTimeout(() => { const el = $("#setConfDir"); if (el) { el.focus(); el.select(); } }, 60);
+    });
     // 代理搜索：150ms 防抖过滤，避免每敲一个字符全量重建列表（低端机掉帧源）
     const onProxySearchInput = (e) => {
       proxySearch = e.target.value;
@@ -103,7 +108,8 @@ const App = (() => {
       const cnt = document.getElementById("proxyCount");
       if (cnt) cnt.textContent = `（${allProxies.length}）`;
     });
-    // 目标地址池
+    // 目标地址池（弹窗入口在代理列表头部，代理再多无需滚动）
+    $("#btnOpenPool").addEventListener("click", openPool);
     $("#btnAddPoolTarget").addEventListener("click", openAddPool);
     $("#btnConfirmAddPool").addEventListener("click", () => {
       if (editingPoolItem) savePoolAlias();
@@ -111,14 +117,10 @@ const App = (() => {
     });
     bindModalClose("#addProxyModal");
     bindModalClose("#editTargetsModal");
+    bindModalClose("#poolModal");
     bindModalClose("#addPoolModal", () => {
       // 关闭池弹窗时重置编辑态
-      if (editingPoolItem) {
-        editingPoolItem = null;
-        $("#addPoolTarget").disabled = false;
-        $("#addPoolModal .modal-head .panel-title").textContent = "添加目标地址";
-        $("#btnConfirmAddPool").textContent = "添加";
-      }
+      if (editingPoolItem) resetPoolModal();
     });
   }
 
@@ -161,15 +163,21 @@ const App = (() => {
 
   /* ---------- 设置弹窗 ---------- */
   let currentSettingsPort = null; // 当前服务实际端口（用于判断是否变更）
+  let currentDataDir = null;      // 当前 manager 数据目录（判断是否变更）
 
   async function openSettings() {
     try {
       const s = await api.settings();
       currentSettingsPort = s.port || 8310;
+      currentDataDir = s.dataDir || null;
       $("#setNginxPath").value = s.nginxPath || "";
       $("#setConfDir").value = s.confDir || "";
       $("#setBackupRetention").value = s.backupRetention != null ? s.backupRetention : 7;
       $("#setPort").value = s.port || 8310;
+      $("#setDataDir").value = s.dataDir || "";
+      $("#setDataDir").disabled = !!s.dataDirLocked;
+      $("#setDataDir").title = s.dataDirLocked ? "由 --data-dir 参数或 NGINX_MANAGER_DATA_DIR 环境变量指定，界面不可修改" : "";
+      $("#settingsFileText").textContent = s.settingsFile || "—";
       $("#setError").hidden = true;
       lockBody();
       openModal("#settingsModal");
@@ -183,8 +191,14 @@ const App = (() => {
     const confDir = $("#setConfDir").value.trim();
     const retentionRaw = $("#setBackupRetention").value.trim();
     const portRaw = $("#setPort").value.trim();
+    const newDataDir = $("#setDataDir").value.trim();
     if (!nginxPath || !confDir) {
       $("#setError").textContent = "请填写完整路径";
+      $("#setError").hidden = false;
+      return;
+    }
+    if (!newDataDir) {
+      $("#setError").textContent = "manager 数据目录不能为空";
       $("#setError").hidden = false;
       return;
     }
@@ -206,18 +220,28 @@ const App = (() => {
       const ok = await confirmDialog("端口将改为 " + newPort + "，服务会自动重启并打开新地址。确认？");
       if (!ok) return;
     }
+    // 数据目录（manager 配置文件地址）变更 → 确认迁移 + 自动重启
+    const dataDirChanged = !!currentDataDir && newDataDir !== currentDataDir;
+    if (dataDirChanged) {
+      const ok = await confirmDialog("manager 配置文件地址将改为：\n" + newDataDir + "\n\n现有设置与备份会迁移过去（旧目录保留），服务将自动重启。确认？");
+      if (!ok) return;
+    }
     try {
-      await api.saveSettings(nginxPath, confDir, retention, newPort);
+      const res = await api.saveSettings(nginxPath, confDir, retention, newPort, dataDirChanged ? newDataDir : null);
       closeModal("#settingsModal");
       unlockBody();
-      if (portChanged) {
-        // 触发服务重启，等待新端口就绪后跳转
-        toast("端口已更新，服务重启中…", "success");
-        try { await api.restart(newPort); } catch (e) { /* 重启瞬间连接断开属正常 */ }
-        const newUrl = "http://" + window.location.hostname + ":" + newPort + "/";
+      const restarting = !!(res && res.restarting); // 后端在数据目录变更时自行重启
+      const targetPort = (res && res.port) || newPort || currentSettingsPort;
+      if (portChanged || restarting) {
+        toast("服务重启中…", "success");
+        if (portChanged && !restarting) {
+          // 仅端口变更：沿用前端触发重启的旧流程
+          try { await api.restart(targetPort); } catch (e) { /* 重启瞬间连接断开属正常 */ }
+        }
+        const newUrl = "http://" + window.location.hostname + ":" + targetPort + "/";
         const ready = await waitForServer(newUrl, 40);
         if (ready) {
-          toast("服务已在新端口启动", "success");
+          toast("服务已重启", "success");
           window.location.href = newUrl;
         } else {
           toast("服务重启中，请稍后手动访问 " + newUrl, "error");
@@ -231,11 +255,13 @@ const App = (() => {
         window.location.reload();
         return;
       }
-      // 配置可能变化，刷新整个面板
+      // 配置可能变化（含配置目录切换），刷新所有面板：配置树、状态、备份、日志、代理与地址池
       await loadTree();
       refreshStatus();
       loadBackups();
       loadErrorLog();
+      loadProxies();
+      loadPool();
     } catch (e) {
       $("#setError").textContent = e.message;
       $("#setError").hidden = false;
@@ -280,6 +306,12 @@ const App = (() => {
       $("#stVersion").textContent = st.version || "—";
       $("#stPid").textContent = st.pid || "—";
       $("#stConf").textContent = st.confPath || (preview ? "（预览模式）" : "—");
+      // 代理页顶部同步显示当前管理的配置文件完整路径
+      const cp = $("#confPathText");
+      if (cp) {
+        cp.textContent = st.confPath || (preview ? "（预览模式，未配置）" : "—");
+        cp.title = st.confPath || "";
+      }
     } catch (e) {
       // 服务不可达时静默，保底显示
     }
@@ -569,10 +601,28 @@ const App = (() => {
      条目结构: {target, alias}，alias 为 proxy_pass 行尾注释 */
   let poolTargets = [];
 
+  /* 池去重口径（与后端 _pool_key 一致）：scheme/host 小写、省默认端口、路径去末尾 '/'，
+     使 http://A:80/ 与 http://a 视为同一地址，避免等价写法重复展示/重复切换 */
+  function targetKey(t) {
+    const s = String(t || "").trim();
+    const m = s.match(/^(https?):\/\/([^/?#]+)([^#]*)$/i);
+    if (!m) return s.toLowerCase();
+    const scheme = m[1].toLowerCase();
+    let hostport = m[2].toLowerCase();
+    const path = (m[3] || "").replace(/\/+$/, "");
+    let host = hostport, port = "";
+    const i = hostport.lastIndexOf(":");
+    if (i >= 0) { host = hostport.slice(0, i); port = hostport.slice(i + 1); }
+    if ((scheme === "http" && port === "80") || (scheme === "https" && port === "443")) port = "";
+    hostport = port ? host + ":" + port : host;
+    return scheme + "://" + hostport + path;
+  }
+
   function poolTargetList() { return poolTargets.map((p) => p.target); }
 
   function poolAlias(target) {
-    const item = poolTargets.find((p) => p.target === target);
+    const k = targetKey(target);
+    const item = poolTargets.find((p) => targetKey(p.target) === k);
     return item ? item.alias : "";
   }
 
@@ -590,6 +640,20 @@ const App = (() => {
       poolTargets = [];
       $("#poolList").innerHTML = '<p class="muted">加载失败</p>';
     }
+    renderPoolCount();
+  }
+
+  function renderPoolCount() {
+    const text = poolTargets.length ? `（${poolTargets.length}）` : "";
+    ["#poolCount", "#poolCountModal"].forEach((sel) => {
+      const el = $(sel);
+      if (el) el.textContent = text;
+    });
+  }
+
+  function openPool() {
+    openModal("#poolModal");
+    loadPool();
   }
 
   function renderPoolList() {
@@ -639,7 +703,15 @@ const App = (() => {
     }
   }
 
+  function resetPoolModal() {
+    editingPoolItem = null;
+    $("#addPoolTarget").disabled = false;
+    $("#addPoolModal .modal-head .panel-title").textContent = "添加目标地址";
+    $("#btnConfirmAddPool").textContent = "添加";
+  }
+
   function openAddPool() {
+    resetPoolModal();
     $("#addPoolTarget").value = "";
     $("#addPoolAlias").value = "";
     $("#addPoolError").hidden = true;
@@ -692,6 +764,7 @@ const App = (() => {
       await api.setPoolAlias(editingPoolItem.target, alias);
       closeModal("#addPoolModal");
       unlockBody();
+      resetPoolModal();
       loadPool();
       loadProxies();
       toast("别名已更新", "success");
@@ -734,16 +807,32 @@ const App = (() => {
       const row = document.createElement("div");
       row.className = "proxy-item-row";
       const select = document.createElement("select");
-      // 下拉选项读取自配置文件（池 = 全部 proxy_pass 目标并集 ∪ 该代理已有地址，去重）；
-      // 选池中未写入本代理的地址时，后端切换会自动追加为备选
+      // 下拉选项读取自配置文件（池 = 全部 proxy_pass 目标并集 ∪ 该代理已有地址），
+      // 按规范化 key 去重，等价写法（斜杠/大小写/默认端口）只展示一条
       const merged = [];
-      poolTargets.forEach((pt) => { if (!merged.includes(pt.target)) merged.push(pt.target); });
-      (p.targets || []).forEach((t) => { if (!merged.includes(t)) merged.push(t); });
+      const seenKeys = new Set();
+      const pushTarget = (t, override) => {
+        const k = targetKey(t);
+        if (seenKeys.has(k)) {
+          // 同 key 已存在（池地址在先）：代理自身写法优先展示（切换无需改配置）
+          if (override) {
+            const i = merged.findIndex((x) => targetKey(x) === k);
+            if (i >= 0) merged[i] = t;
+          }
+          return;
+        }
+        seenKeys.add(k);
+        merged.push(t);
+      };
+      poolTargets.forEach((pt) => pushTarget(pt.target));
+      (p.targets || []).forEach((t) => { if (t === p.active) pushTarget(t, true); });
+      (p.targets || []).forEach((t) => pushTarget(t, true));
       merged.forEach((t) => {
         const opt = document.createElement("option");
         opt.value = t;
-        const inProxy = (p.targets || []).includes(t);
-        const inPool = poolTargetList().includes(t);
+        const tk = targetKey(t);
+        const inProxy = (p.targets || []).some((x) => targetKey(x) === tk);
+        const inPool = poolTargetList().some((x) => targetKey(x) === tk);
         const alias = poolAlias(t);
         const tags = [];
         if (t === p.active) tags.push("当前");

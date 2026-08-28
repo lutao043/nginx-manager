@@ -148,6 +148,33 @@ def _sanitize_alias(alias: str) -> str:
     return " ".join((alias or "").split())
 
 
+# 池去重口径下的默认端口（省略视为同一地址）
+_POOL_DEFAULT_PORTS = {"http": "80", "https": "443"}
+
+
+def _pool_key(target: str) -> str:
+    """地址池去重的规范化键，消除等价写法导致的重复条目：
+    - scheme/host 不区分大小写（HTTP://A ↔ http://a）；
+    - 省略默认端口（http :80 / https :443）；
+    - 路径保留原大小写，仅去掉末尾 '/'（http://a:8000/ ↔ http://a:8000）；
+    - unix: socket 路径整体小写后比较。"""
+    t = (target or "").strip()
+    m = re.match(r"^(https?)://([^/?#]+)([^#]*)$", t, re.IGNORECASE)
+    if not m:
+        return t.lower()
+    scheme = m.group(1).lower()
+    hostport = m.group(2).lower()
+    path = (m.group(3) or "").rstrip("/")
+    if ":" in hostport:
+        host, port = hostport.rsplit(":", 1)
+    else:
+        host, port = hostport, ""
+    if _POOL_DEFAULT_PORTS.get(scheme) == port:
+        port = ""
+    hostport = host + (":" + port if port else "")
+    return f"{scheme}://{hostport}{path}"
+
+
 def _pp_line(indent: str, commented: bool, url: str, alias: str = "") -> str:
     """渲染一行 proxy_pass（可带注释前缀与行尾别名注释）。"""
     prefix = "#" if commented else ""
@@ -328,13 +355,16 @@ class ProxyManager:
         return {"ok": True}
 
     def update_targets(self, path: str, targets: List[str]) -> dict:
-        norm = []
+        norm, seen_keys = [], set()
         for t in targets:
             nt = _normalize_target(t)
             if not nt:
                 return {"ok": False, "error": f"target 非法: {t}"}
-            if nt not in norm:
-                norm.append(nt)
+            k = _pool_key(nt)
+            if k in seen_keys:  # 同一地址（含等价写法）只保留一条
+                continue
+            seen_keys.add(k)
+            norm.append(nt)
         if not norm:
             return {"ok": False, "error": "targets 不能为空"}
         self._refresh()
@@ -377,30 +407,39 @@ class ProxyManager:
     # ---- 目标地址池（与配置文件合一：池 = 全部 proxy_pass 目标并集，增删改查直接写 conf）----
 
     def pool_targets(self) -> List[dict]:
-        """返回地址池：全部代理 proxy_pass 目标（激活+注释备选）按出现顺序去重，
-        别名取行尾注释（同 url 多行时取第一个非空别名）。"""
+        """返回地址池：全部代理 proxy_pass 目标（激活+注释备选）按出现顺序去重。
+        去重按 _pool_key 规范化口径（等价写法合并为一条，取首个写法展示）；
+        别名取行尾注释（同地址任意等价行中第一个非空别名）。"""
         self._refresh()
         out: List[dict] = []
+        index: dict = {}
         for b in self.blocks:
             for idx in b.pp_lines:
                 url = b.pp_values[idx]
                 alias = b.pp_comments.get(idx, "")
-                item = next((x for x in out if x["target"] == url), None)
+                key = _pool_key(url)
+                item = index.get(key)
                 if item is None:
-                    out.append({"target": url, "alias": alias})
+                    item = {"target": url, "alias": alias}
+                    index[key] = item
+                    out.append(item)
                 elif alias and not item["alias"]:
                     item["alias"] = alias
         return out
 
     def pool_add(self, target: str, alias: str = "") -> dict:
-        """池新增：校验后把 target 追加为所有代理块的注释备选行（不改变激活目标）。"""
+        """池新增：校验后把 target 追加为所有代理块的注释备选行（不改变激活目标）。
+        已存在同一地址（含等价写法）时拒绝。"""
         target = (target or "").strip()
         alias = _sanitize_alias(alias)
         if _normalize_target(target) is None:
             return {"ok": False, "error": f"target 非法: {target}"}
         self._refresh()
-        if any(url == target for b in self.blocks for url in b.pp_values.values()):
-            return {"ok": False, "error": f"目标已在池中: {target}"}
+        key = _pool_key(target)
+        for b in self.blocks:
+            for url in b.pp_values.values():
+                if _pool_key(url) == key:
+                    return {"ok": False, "error": f"目标已在池中（存在等价写法 {url}）: {target}"}
         if not self.blocks:
             return {"ok": False, "error": "当前配置中没有代理，无法添加目标地址（请先添加代理）"}
         lines = self.content.split("\n")
@@ -414,11 +453,12 @@ class ProxyManager:
         return {"ok": True}
 
     def pool_set_alias(self, target: str, alias: str) -> dict:
-        """池改别名：重写该目标所有 proxy_pass 行的行尾注释（别名留空即清除）。"""
+        """池改别名：重写该地址（含全部等价写法行）的行尾注释（别名留空即清除）。"""
         target = (target or "").strip()
         alias = _sanitize_alias(alias)
         self._refresh()
-        hits = [(b, idx) for b in self.blocks for idx in b.pp_lines if b.pp_values[idx] == target]
+        key = _pool_key(target)
+        hits = [(b, idx) for b in self.blocks for idx in b.pp_lines if _pool_key(b.pp_values[idx]) == key]
         if not hits:
             return {"ok": False, "error": f"目标不在池中: {target}"}
         lines = self.content.split("\n")
@@ -432,15 +472,17 @@ class ProxyManager:
         return {"ok": True}
 
     def pool_remove(self, target: str) -> dict:
-        """池删除：从所有代理块移除该目标的 proxy_pass 行；
-        若在某个代理中处于激活状态则拒绝（返回 409 语义错误），需先切换。"""
+        """池删除：从所有代理块移除该地址（含全部等价写法）的 proxy_pass 行；
+        若在某个代理中处于激活状态（含等价写法）则拒绝，需先切换。"""
         target = (target or "").strip()
         self._refresh()
+        key = _pool_key(target)
         idxs: List[int] = []
         for b in self.blocks:
+            active_here = b.active is not None and _pool_key(b.active) == key
             for idx in b.pp_lines:
-                if b.pp_values[idx] == target:
-                    if b.active == target:
+                if _pool_key(b.pp_values[idx]) == key:
+                    if active_here:
                         return {"ok": False,
                                 "error": f"目标在代理 {b.path} 中处于激活状态，请先切换其他目标后再删除"}
                     idxs.append(idx)

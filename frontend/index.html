@@ -4,12 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>nginx 管理端</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<!-- 字体异步加载：不阻塞首屏渲染（内网/离线时页面秒开，字体到达后平滑替换） -->
-<link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
-<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<!-- 离线环境运行：不引用任何外部资源，字体走系统回退栈（见 style.css --font* 变量） -->
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body class="first-load">
@@ -170,9 +165,14 @@
             <div class="panel-title-row">
               <span class="panel-title">反向代理列表<span id="proxyCount" class="panel-count"></span></span>
               <div class="panel-actions">
+                <button id="btnOpenPool" class="btn btn-mini" type="button" title="管理目标地址池">目标地址池<span id="poolCount" class="panel-count"></span></button>
                 <button id="btnRefreshProxies" class="btn btn-mini" type="button" title="刷新">↻</button>
                 <button id="btnAddProxy" class="btn btn-primary btn-mini" type="button">＋ 添加代理</button>
               </div>
+            </div>
+            <div class="proxy-tip muted small">
+              当前配置文件：<span id="confPathText" class="mono">加载中…</span>
+              <button id="btnChangeConf" class="btn btn-mini" type="button" title="查看/修改 nginx 路径与配置目录" style="margin-left:6px">更改</button>
             </div>
             <div class="proxy-tip muted small">切换目标地址后自动备份并执行 nginx -t 校验，通过后生效</div>
             <div class="proxy-search-row">
@@ -182,23 +182,29 @@
             <div id="proxyList" class="proxy-list"><p class="muted">加载中…</p></div>
           </div>
 
-          <!-- 目标地址池 -->
-          <div class="panel">
-            <div class="panel-title-row">
-              <span class="panel-title">目标地址池</span>
-              <div class="panel-actions">
-                <button id="btnAddPoolTarget" class="btn btn-primary btn-mini" type="button">＋ 添加目标</button>
-              </div>
-            </div>
-            <div class="proxy-tip muted small">地址池即配置文件中全部 proxy_pass 目标（含注释备选）；添加/删除/别名会直接写入 nginx.conf 并自动校验</div>
-            <div id="poolList" class="pool-list"><p class="muted">加载中…</p></div>
-          </div>
-
           <!-- 代理测试结果 -->
           <div class="test-result" id="proxyTestResult" hidden></div>
         </section>
       </div><!-- /viewProxies -->
       </div><!-- /view-area -->
+    </div>
+  </div>
+
+  <!-- 目标地址池弹窗（代理列表头部按钮打开，免去长列表滚动） -->
+  <div class="modal-mask" id="poolModal" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <span class="panel-title">目标地址池<span id="poolCountModal" class="panel-count"></span></span>
+        <button class="modal-close" type="button" aria-label="关闭" data-close>×</button>
+      </div>
+      <div class="modal-body">
+        <div class="proxy-tip muted small">地址池即配置文件中全部 proxy_pass 目标（含注释备选）；添加/删除/别名会直接写入 nginx.conf 并自动校验</div>
+        <div id="poolList" class="pool-list pool-list-modal"><p class="muted">加载中…</p></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" type="button" data-close>关闭</button>
+        <button class="btn btn-primary" id="btnAddPoolTarget" type="button">＋ 添加目标</button>
+      </div>
     </div>
   </div>
 
@@ -294,6 +300,11 @@
         <div class="wizard-field">
           <label>监听端口（修改后服务自动重启）</label>
           <input id="setPort" type="number" min="1" max="65535" autocomplete="off">
+        </div>
+        <div class="wizard-field">
+          <label>manager 数据目录（配置文件 settings.json 与备份的存放位置，修改后自动重启）</label>
+          <input id="setDataDir" type="text" autocomplete="off" spellcheck="false">
+          <div class="muted small" style="margin-top:4px">当前配置文件：<span id="settingsFileText" class="mono">—</span></div>
         </div>
         <div class="wizard-error" id="setError" hidden></div>
       </div>

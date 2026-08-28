@@ -1,5 +1,5 @@
 /* style.css — nginx 管理端 · 4 套配色 × 日夜双模式
-   字体通过 index.html <link> 加载（Space Grotesk + Inter + JetBrains Mono） */
+   系统字体回退栈，不加载任何外部字体（离线环境可用） */
 
 /* ═══════════════════════════════════════════
    1. 主题变量（8 种主题，通过 data-theme 切换）
@@ -433,6 +433,7 @@ body.first-load .backup-item{animation:slideUp var(--dur) var(--ease-out) both}
 }
 .targets-edit-row .btn-remove-row:hover{color:var(--danger);background:var(--danger-d);border-color:rgba(248,113,113,.2)}
 .pool-list{display:flex;flex-wrap:wrap;gap:10px}
+.pool-list-modal{max-height:56vh;overflow:auto;padding-right:4px}
 .pool-item{
   display:inline-flex;align-items:center;gap:8px;
   background:var(--s2);border:1px solid var(--border);border-radius:var(--r-full);

@@ -33,7 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from nginxctl import NginxController, create_controller
-from proxymgr import ProxyManager
+from proxymgr import ProxyManager, _pool_key
 
 APP_NAME = "nginx-manager"
 IS_FROZEN = getattr(sys, "frozen", False)
@@ -46,7 +46,12 @@ FRONTEND_DIR = os.path.join(getattr(sys, "_MEIPASS", PROJECT_ROOT), "frontend")
 
 # ---------- 用户数据目录 ----------
 
-def user_data_dir() -> str:
+def default_data_dir() -> str:
+    """平台默认数据目录（配置文件 settings.json、备份、单实例锁的默认存放位置）。
+    可用环境变量 NGINX_MANAGER_DEFAULT_DATA_DIR 整体覆盖（便携部署/测试用）。"""
+    env = os.environ.get("NGINX_MANAGER_DEFAULT_DATA_DIR")
+    if env:
+        return env
     if sys.platform == "win32":
         base = os.environ.get("APPDATA") or os.path.expanduser("~")
         return os.path.join(base, APP_NAME)
@@ -55,13 +60,57 @@ def user_data_dir() -> str:
     return os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), APP_NAME)
 
 
+POINTER_FILE = "data_dir.txt"  # 默认目录下的指针文件：内容为自定义数据目录路径
+_data_dir_cli: str | None = None  # --data-dir 启动参数（优先级最高，界面不可改）
+
+
+def data_dir_locked() -> bool:
+    """数据目录是否被启动参数/环境变量锁定（锁定时界面不可修改）。"""
+    return bool(_data_dir_cli or os.environ.get("NGINX_MANAGER_DATA_DIR"))
+
+
+def resolve_data_dir() -> str:
+    """manager 自身数据目录（即配置文件地址）解析顺序：
+    1) --data-dir 启动参数；2) 环境变量 NGINX_MANAGER_DATA_DIR；
+    3) 默认目录下 data_dir.txt 指针文件；4) 平台默认目录。"""
+    if _data_dir_cli:
+        return _data_dir_cli
+    env = os.environ.get("NGINX_MANAGER_DATA_DIR")
+    if env:
+        return env
+    pointer = os.path.join(default_data_dir(), POINTER_FILE)
+    try:
+        with open(pointer, "r", encoding="utf-8") as f:
+            custom = f.read().strip()
+        if custom:
+            return custom
+    except OSError:
+        pass
+    return default_data_dir()
+
+
+def write_data_dir_pointer(target: str) -> None:
+    """把自定义数据目录写入默认目录下的指针文件；target 为默认目录时删除指针。"""
+    default = default_data_dir()
+    os.makedirs(default, exist_ok=True)
+    pointer = os.path.join(default, POINTER_FILE)
+    if os.path.abspath(target) == os.path.abspath(default):
+        try:
+            os.remove(pointer)
+        except OSError:
+            pass
+        return
+    with open(pointer, "w", encoding="utf-8") as f:
+        f.write(target)
+
+
 def ensure_data_dirs() -> dict:
-    """确保数据目录结构存在，返回 {root, backups} 路径。"""
-    root = user_data_dir()
+    """确保数据目录结构存在，返回 {root, settingsFile, backups} 路径。"""
+    root = resolve_data_dir()
     backups = os.path.join(root, "backups")
     os.makedirs(root, exist_ok=True)
     os.makedirs(backups, exist_ok=True)
-    return {"root": root, "backups": backups}
+    return {"root": root, "settingsFile": os.path.join(root, "settings.json"), "backups": backups}
 
 
 # ---------- 单实例 ----------
@@ -118,15 +167,28 @@ def write_instance_lock(lock_path: str, pid: int, port: int) -> None:
 
 
 def restart_command() -> list:
-    """构造重启命令：exe 直接重启自身；开发模式去掉 --port（新实例从 settings 读端口）。"""
+    """构造重启命令：exe 直接重启自身；开发模式去掉 --port 及其值
+    （兼容 `--port 8471` 与 `--port=8471` 两种写法，新实例从 settings 读端口）。"""
     if getattr(sys, "frozen", False):  # PyInstaller 打包
         return [sys.executable]
-    args = [a for a in sys.argv if a != "--port" and not a.startswith("--port=")]
+    args = []
+    skip_next = False
+    for a in sys.argv[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if a == "--port":
+            skip_next = True  # 下一个参数是端口值，一并去掉
+            continue
+        if a.startswith("--port="):
+            continue
+        args.append(a)
     return [sys.executable] + args
 
 
 def spawn_and_exit(cmd: list) -> None:
-    """以分离进程启动新实例，然后立即退出当前进程。"""
+    """以分离进程启动新实例，然后立即退出当前进程。
+    子进程输出写入 <数据目录>/restart_child.log，便于排查重启失败。"""
     try:
         flags = 0
         kwargs = {}
@@ -134,10 +196,15 @@ def spawn_and_exit(cmd: list) -> None:
             flags = getattr(subprocess, "DETACHED_PROCESS", 0x00000008) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
         else:
             kwargs["start_new_session"] = True
-        subprocess.Popen(
-            cmd, cwd=os.getcwd(), creationflags=flags, stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs,
-        )
+        log_path = os.path.join(resolve_data_dir(), "restart_child.log")
+        log_f = open(log_path, "a", encoding="utf-8")
+        try:
+            subprocess.Popen(
+                cmd, cwd=os.getcwd(), creationflags=flags, stdin=subprocess.DEVNULL,
+                stdout=log_f, stderr=subprocess.STDOUT, **kwargs,
+            )
+        finally:
+            log_f.close()
     except Exception as e:
         print(f"[重启] 启动新实例失败: {e}")
         return
@@ -557,6 +624,10 @@ class Handler(BaseHTTPRequestHandler):
             "backupRetention": self.settings.get("backupRetention", BACKUP_RETENTION),
             "configured": self.settings.configured(),
             "preview": Handler.controller is None,
+            # manager 自身配置文件地址（数据目录）
+            "dataDir": self.data_dirs["root"],
+            "settingsFile": self.data_dirs["settingsFile"],
+            "dataDirLocked": data_dir_locked(),
         })
 
     # ---- API: POST ----
@@ -814,7 +885,63 @@ class Handler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 self._err(400, "port 必须为 1~65535 的整数")
                 return
+        # manager 自身数据目录（可选）：改地址后需重启生效（新实例按指针文件读取）
+        data_dir_raw = str(body.get("dataDir") or "").strip()
+        data_dir_changed = False
+        if data_dir_raw and os.path.abspath(data_dir_raw) != os.path.abspath(self.data_dirs["root"]):
+            if data_dir_locked():
+                self._err(409, "当前数据目录由 --data-dir 参数或环境变量指定，无法在界面修改")
+                return
+            target = os.path.abspath(data_dir_raw)
+            # 校验目标目录可创建、可写
+            try:
+                os.makedirs(target, exist_ok=True)
+                probe = os.path.join(target, ".write_probe")
+                with open(probe, "w", encoding="utf-8") as f:
+                    f.write("ok")
+                os.remove(probe)
+            except OSError as e:
+                self._err(409, f"目标数据目录不可用: {e}")
+                return
+            # 迁移既有数据（不覆盖目标已有文件；设置/备份随身带走，旧目录保留作回退）
+            try:
+                old_settings = os.path.join(self.data_dirs["root"], "settings.json")
+                new_settings = os.path.join(target, "settings.json")
+                if os.path.isfile(old_settings) and not os.path.isfile(new_settings):
+                    shutil.copyfile(old_settings, new_settings)
+                old_backups = self.data_dirs["backups"]
+                if os.path.isdir(old_backups):
+                    new_backups = os.path.join(target, "backups")
+                    os.makedirs(new_backups, exist_ok=True)
+                    for name in os.listdir(old_backups):
+                        src = os.path.join(old_backups, name)
+                        dst = os.path.join(new_backups, name)
+                        if os.path.isdir(src):
+                            if not os.path.isdir(dst):
+                                shutil.copytree(src, dst)
+                        elif not os.path.isfile(dst):
+                            shutil.copyfile(src, dst)
+            except OSError as e:
+                self._err(500, f"迁移配置文件到新目录失败: {e}")
+                return
+            # 写指针文件（目标即平台默认目录时删除指针），重启后新实例按指针读取
+            try:
+                write_data_dir_pointer(target)
+            except OSError as e:
+                self._err(500, f"写入数据目录指针文件失败: {e}")
+                return
+            data_dir_changed = True
         Handler.controller = create_controller(nginx_path, conf_dir)
+        if data_dir_changed:
+            # 延迟 0.5s 让响应先返回；新实例按指针文件从新目录读取配置
+            threading.Timer(0.5, spawn_and_exit, args=(restart_command(),)).start()
+            self._ok({
+                "ok": True, "restarting": True, "dataDir": data_dir_raw,
+                "nginxPath": nginx_path, "confDir": conf_dir,
+                "port": int(self.settings.get("port", 0) or 0) or DEFAULT_PORT,
+                "backupRetention": self.settings.get("backupRetention", BACKUP_RETENTION),
+            })
+            return
         self._ok({
             "ok": True,
             "nginxPath": nginx_path,
@@ -937,13 +1064,18 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_json_body()
         path = str(body.get("path", ""))
         target = str(body.get("target", ""))
-        # 若 target 不在该代理备选中（如从目标池选的），先自动追加为备选再切换
+        # 若该地址（含等价写法，如末尾斜杠/大小写/默认端口差异）已在备选中，
+        # 直接复用已有行切换，避免写入重复地址；否则先自动追加为备选再切换
         proxy_cur = next((p for p in pm.list_proxies() if p["path"] == path), None)
         if proxy_cur is None:
             self._err(404, f"代理不存在: {path}")
             return
-        if target not in proxy_cur.get("targets", []):
-            new_targets = list(proxy_cur.get("targets", [])) + [target]
+        targets = proxy_cur.get("targets", [])
+        hit = next((t for t in targets if _pool_key(t) == _pool_key(target)), None)
+        if hit is not None:
+            target = hit
+        elif target not in targets:
+            new_targets = list(targets) + [target]
             res = pm.update_targets(path, new_targets)
             if not res.get("ok"):
                 self._err(409, res.get("error", "自动加入备选失败"))
@@ -1164,7 +1296,15 @@ def main() -> int:
         help="预览模式：不要求 nginx 已安装/配置，仅提供前端 UI 预览与接口调试；"
              "可通过「设置」填写 nginxPath/confDir 后重载以退出预览",
     )
+    parser.add_argument(
+        "--data-dir", default=None,
+        help="manager 自身数据目录（settings.json/备份的存放位置，默认按平台约定，"
+             "亦可用环境变量 NGINX_MANAGER_DATA_DIR 指定）；优先级高于界面修改",
+    )
     args = parser.parse_args()
+
+    global _data_dir_cli
+    _data_dir_cli = args.data_dir
 
     data_dirs = ensure_data_dirs()
     Handler.data_dirs = data_dirs

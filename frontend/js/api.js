@@ -62,10 +62,11 @@ const api = {
   deleteBackup(id) { return this._request("DELETE", "/api/backups", { id }); },
   errorLog(lines) { return this.get("/api/logs/error?lines=" + (lines || 200)); },
   settings() { return this.get("/api/settings"); },
-  saveSettings(nginxPath, confDir, backupRetention, port) {
+  saveSettings(nginxPath, confDir, backupRetention, port, dataDir) {
     const body = { nginxPath, confDir };
     if (backupRetention !== null && backupRetention !== undefined) body.backupRetention = backupRetention;
     if (port !== null && port !== undefined) body.port = port;
+    if (dataDir) body.dataDir = dataDir; // manager 自身数据目录（变更后后端自动重启）
     return this.put("/api/settings", body);
   },
   restart(port) { return this.post("/api/restart", { port }); },
