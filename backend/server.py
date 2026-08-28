@@ -379,7 +379,7 @@ def pick_nginx_via_dialog() -> dict:
 # ---------- HTTP 处理 ----------
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "nginx-manager/0.4.0"
+    server_version = "nginx-manager/0.5.0"
     settings: SettingsStore = None  # type: ignore
     data_dirs: dict = {}
     controller: NginxController = None  # type: ignore
