@@ -58,11 +58,17 @@
         <p class="wizard-tip">启动程序时系统已弹出选择窗口；若未出现或想修改，可在此手动填写。</p>
         <div class="wizard-field">
           <label>nginx 可执行文件</label>
-          <input id="wizNginxPath" type="text" placeholder="如 C:\nginx\nginx.exe" autocomplete="off">
+          <div class="path-row">
+            <input id="wizNginxPath" type="text" placeholder="如 C:\nginx\nginx.exe" autocomplete="off">
+            <button id="btnWizPickNginx" class="btn" type="button">浏览…</button>
+          </div>
         </div>
         <div class="wizard-field">
           <label>配置目录（含 nginx.conf）</label>
-          <input id="wizConfDir" type="text" placeholder="如 C:\nginx\conf" autocomplete="off">
+          <div class="path-row">
+            <input id="wizConfDir" type="text" placeholder="如 C:\nginx\conf" autocomplete="off">
+            <button id="btnWizPickConfDir" class="btn" type="button">浏览…</button>
+          </div>
         </div>
         <div class="wizard-error" id="wizError" hidden></div>
         <div class="wizard-actions">
@@ -287,11 +293,17 @@
       <div class="modal-body">
         <div class="wizard-field">
           <label>nginx 可执行文件</label>
-          <input id="setNginxPath" type="text" autocomplete="off">
+          <div class="path-row">
+            <input id="setNginxPath" type="text" autocomplete="off">
+            <button id="btnSetPickNginx" class="btn" type="button">浏览…</button>
+          </div>
         </div>
         <div class="wizard-field">
           <label>配置目录（含 nginx.conf）</label>
-          <input id="setConfDir" type="text" autocomplete="off">
+          <div class="path-row">
+            <input id="setConfDir" type="text" autocomplete="off">
+            <button id="btnSetPickConfDir" class="btn" type="button">浏览…</button>
+          </div>
         </div>
         <div class="wizard-field">
           <label>自动保留备份份数（0 = 不自动清理）</label>
@@ -303,7 +315,10 @@
         </div>
         <div class="wizard-field">
           <label>manager 数据目录（配置文件 settings.json 与备份的存放位置，修改后自动重启）</label>
-          <input id="setDataDir" type="text" autocomplete="off" spellcheck="false">
+          <div class="path-row">
+            <input id="setDataDir" type="text" autocomplete="off" spellcheck="false">
+            <button id="btnSetPickDataDir" class="btn" type="button">浏览…</button>
+          </div>
           <div class="muted small" style="margin-top:4px">当前配置文件：<span id="settingsFileText" class="mono">—</span></div>
         </div>
         <div class="wizard-error" id="setError" hidden></div>

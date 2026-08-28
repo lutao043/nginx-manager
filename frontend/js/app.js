@@ -54,6 +54,24 @@ const App = (() => {
   }
 
   /* ---------- 事件绑定 ---------- */
+  /* 路径输入「浏览…」：调后端弹系统选择框（请求阻塞到用户关闭），选中后回填输入框 */
+  function bindPathPicker(inputSel, btnSel, kind, title) {
+    const btn = $(btnSel);
+    const input = $(inputSel);
+    if (!btn || !input) return;
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        const res = await api.pickPath(kind, input.value.trim(), title);
+        if (res && res.path) input.value = res.path; // 用户取消（null）不动原值
+      } catch (e) {
+        toast(e.message, "error");
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+
   function bindEvents() {
     // 向导
     $("#btnWizSave").addEventListener("click", saveWizard);
@@ -91,6 +109,12 @@ const App = (() => {
       openSettings();
       setTimeout(() => { const el = $("#setConfDir"); if (el) { el.focus(); el.select(); } }, 60);
     });
+    // 路径输入：弹系统选择框代替手输（向导 + 设置）
+    bindPathPicker("#wizNginxPath", "#btnWizPickNginx", "file", "请选择 nginx 可执行文件 (nginx.exe / nginx)");
+    bindPathPicker("#wizConfDir", "#btnWizPickConfDir", "dir", "请选择 nginx 配置目录（含 nginx.conf 的目录）");
+    bindPathPicker("#setNginxPath", "#btnSetPickNginx", "file", "请选择 nginx 可执行文件 (nginx.exe / nginx)");
+    bindPathPicker("#setConfDir", "#btnSetPickConfDir", "dir", "请选择 nginx 配置目录（含 nginx.conf 的目录）");
+    bindPathPicker("#setDataDir", "#btnSetPickDataDir", "dir", "请选择 manager 数据目录（settings.json 存放位置）");
     // 代理搜索：150ms 防抖过滤，避免每敲一个字符全量重建列表（低端机掉帧源）
     const onProxySearchInput = (e) => {
       proxySearch = e.target.value;
@@ -177,6 +201,7 @@ const App = (() => {
       $("#setDataDir").value = s.dataDir || "";
       $("#setDataDir").disabled = !!s.dataDirLocked;
       $("#setDataDir").title = s.dataDirLocked ? "由 --data-dir 参数或 NGINX_MANAGER_DATA_DIR 环境变量指定，界面不可修改" : "";
+      $("#btnSetPickDataDir").disabled = !!s.dataDirLocked;
       $("#settingsFileText").textContent = s.settingsFile || "—";
       $("#setError").hidden = true;
       lockBody();

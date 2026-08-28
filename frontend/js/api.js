@@ -71,6 +71,14 @@ const api = {
   },
   restart(port) { return this.post("/api/restart", { port }); },
 
+  // 弹系统选择框选文件/目录（后端阻塞到用户关闭对话框；取消时返回 {path: null}）
+  pickPath(kind, initial, title) {
+    const body = { kind };
+    if (initial) body.initial = initial;
+    if (title) body.title = title;
+    return this.post("/api/pick-path", body);
+  },
+
   // ---- 代理管理 ----
   proxies() { return this.get("/api/proxies"); },
   addProxy(path, target) { return this.post("/api/proxies", { path, target }); },

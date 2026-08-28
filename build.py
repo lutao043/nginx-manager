@@ -87,11 +87,14 @@ def main() -> int:
         vip = generate_version_info(version)
         print(f"[build] generated: {os.path.basename(vip)}")
 
-    # 3. 检查 tkinter（打包 GUI 弹窗需要）
+    # 3. 检查 tkinter（启动选择框与「浏览」按钮依赖；缺则 exe 静默退化为预览模式）
     try:
         import tkinter  # noqa: F401
     except ImportError:
-        print("[build] WARNING: tkinter not available, packaged exe will need --preview flag")
+        print("[build] ERROR: tkinter not available in this Python.")
+        print("         首次启动选择框与界面「浏览…」按钮都需要 tkinter（tcl/tk）。")
+        print("         请改用自带 tcl/tk 的 Python 重新打包（而非 pip 安装的精简 Python）。")
+        return 1
 
     # 4. 检查 PyInstaller
     try:

@@ -322,36 +322,55 @@ def list_backups(backups_dir: str) -> list:
     return result
 
 
-# ---------- 首次使用：文件选择对话框 ----------
+# ---------- 系统文件/目录选择对话框 ----------
 
-def pick_nginx_via_dialog() -> dict:
-    """弹系统对话框依次选择 nginx 程序与配置目录。返回 {nginxPath, confDir}。"""
+_dialog_lock = threading.Lock()  # tkinter 对话框串行化：并发多开 Tk 实例会崩溃
+
+
+def pick_path_via_dialog(kind: str, title: str = "", initial: str = "",
+                         filetypes: list = None) -> dict:
+    """弹系统选择框选单个文件（kind="file"）或目录（kind="dir"）。
+    initial 为输入框已有路径，作为对话框起始位置。返回 {path}，用户取消时 path=None。"""
     import tkinter as tk
     from tkinter import filedialog
 
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes("-topmost", True)
-    root.update()
+    initial = initial or ""
+    with _dialog_lock:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        root.update()
+        try:
+            if kind == "dir":
+                path = filedialog.askdirectory(
+                    title=title or "请选择目录",
+                    initialdir=initial if os.path.isdir(initial) else None,
+                    mustexist=True,
+                    parent=root,
+                )
+            else:
+                path = filedialog.askopenfilename(
+                    title=title or "请选择文件",
+                    initialdir=os.path.dirname(initial) if os.path.isdir(os.path.dirname(initial)) else None,
+                    filetypes=filetypes or [("所有文件", "*.*")],
+                    parent=root,
+                )
+        finally:
+            root.destroy()
+    return {"path": path or None}
 
-    nginx_path = filedialog.askopenfilename(
-        title="请选择 nginx 可执行文件 (nginx.exe / nginx)",
-        filetypes=[
-            ("nginx 可执行文件", "*.exe"),
-            ("所有文件", "*.*"),
-        ],
-        parent=root,
-    )
+
+def pick_nginx_via_dialog() -> dict:
+    """弹系统对话框依次选择 nginx 程序与配置目录。返回 {nginxPath, confDir}。"""
+    nginx_path = pick_path_via_dialog(
+        "file", "请选择 nginx 可执行文件 (nginx.exe / nginx)",
+        filetypes=[("nginx 可执行文件", "*.exe"), ("所有文件", "*.*")],
+    ).get("path")
     if not nginx_path:
-        root.destroy()
         return {}
-
-    conf_dir = filedialog.askdirectory(
-        title="请选择 nginx 配置目录（含 nginx.conf 的目录）",
-        mustexist=True,
-        parent=root,
-    )
-    root.destroy()
+    conf_dir = pick_path_via_dialog(
+        "dir", "请选择 nginx 配置目录（含 nginx.conf 的目录）",
+    ).get("path")
     if not conf_dir:
         return {}
     return {"nginxPath": nginx_path, "confDir": conf_dir}
@@ -630,6 +649,26 @@ class Handler(BaseHTTPRequestHandler):
             "dataDirLocked": data_dir_locked(),
         })
 
+    def _api_pick_path(self) -> None:
+        """弹系统选择框选文件/目录：body {kind: "file"|"dir", initial?, title?}。
+        用户取消时返回 {path: null}。请求会阻塞到对话框关闭（ThreadingHTTPServer 不影响其他请求）。"""
+        body = self._read_json_body()
+        kind = str(body.get("kind") or "dir")
+        if kind not in ("file", "dir"):
+            self._err(400, "kind 必须为 file 或 dir")
+            return
+        if not _tkinter_available():
+            self._err(501, "当前环境无图形界面，无法弹出系统选择框，请手动输入路径")
+            return
+        try:
+            res = pick_path_via_dialog(
+                kind, str(body.get("title") or ""), str(body.get("initial") or ""),
+            )
+        except Exception as e:
+            self._err(500, f"弹出系统选择框失败: {e}")
+            return
+        self._ok(res)
+
     # ---- API: POST ----
 
     def _route_api_post(self, path: str) -> None:
@@ -649,6 +688,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_proxies_add()
         elif path == "/api/proxy-pool":
             self._api_proxy_pool_add()
+        elif path == "/api/pick-path":
+            self._api_pick_path()
         elif path == "/api/restart":
             self._api_restart()
         else:

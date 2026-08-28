@@ -29,12 +29,12 @@ a = Analysis(
     pathex=[os.path.join(ROOT, "backend")],
     binaries=[],
     datas=[(os.path.join(ROOT, "frontend"), "frontend")],
-    # tkinter 是标准库，但 PyInstaller 静态分析不会自动收齐 _tkinter.pyd
-    # 与 tcl/tk DLL；用 collect_submodules 显式抓全所有子模块
+    # tkinter 是标准库，PyInstaller 静态分析可识别函数内的 import tkinter 并自动
+    # 收齐 _tkinter.pyd 与 tcl/tk DLL（启动选择框与「浏览」按钮依赖它，勿加入 excludes）
     hiddenimports=[],
     hookspath=[],
     runtime_hooks=[],
-    excludes=["tkinter", "_tkinter", "tcl", "tk"],
+    excludes=[],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

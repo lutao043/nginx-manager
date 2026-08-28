@@ -338,6 +338,34 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 { "ok": true, "nginxPath": "...", "confDir": "...", "port": 9000, "backupRetention": 7 }
 ```
 
+### POST /api/pick-path
+
+弹系统选择框（tkinter）让用户选择文件/目录，替代手工输入路径。请求阻塞到用户关闭对话框
+（服务为多线程，不影响其他请求；对话框用全局锁串行化，避免并发多开 Tk）。
+
+**请求体**
+
+```json
+{ "kind": "dir", "initial": "C:/nginx/conf", "title": "请选择 nginx 配置目录" }
+```
+
+- `kind`（可选）：`"file"`（选文件）或 `"dir"`（选目录），默认 `"dir"`。
+- `initial`（可选）：输入框已有路径，作为对话框起始位置。
+- `title`（可选）：对话框标题。
+
+**成功响应 200**
+
+```json
+{ "path": "C:/nginx/conf" }
+```
+
+用户取消选择时返回 `{ "path": null }`。
+
+**错误**
+- `400`：kind 不是 file/dir。
+- `500`：弹出对话框失败。
+- `501`：当前环境无图形界面（tkinter 不可用），需手动输入路径。
+
 ### POST /api/restart
 
 保存端口后自动重启服务（启动新实例并退出当前进程，单实例逻辑保证旧进程被清理）。

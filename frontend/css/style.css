@@ -243,6 +243,10 @@ input[type="text"],input[type="number"]{
 input[type="text"]:focus,input[type="number"]:focus{outline:none;border-color:var(--accent);box-shadow:var(--ring);background:var(--bg-input)}
 input::placeholder{color:var(--text-4)}
 .wizard-row input{flex:1}
+/* 路径输入行：输入框 + 「浏览…」系统选框按钮 */
+.path-row{display:flex;gap:8px;align-items:center}
+.path-row input{flex:1;min-width:0}
+.path-row .btn{flex:none;white-space:nowrap}
 select{
   padding:0 12px;height:38px;background:var(--bg-input);color:var(--text-1);
   border:1px solid var(--border);border-radius:var(--r-sm);
