@@ -378,6 +378,19 @@ def pick_nginx_via_dialog() -> dict:
 
 # ---------- HTTP 处理 ----------
 
+class Server(ThreadingHTTPServer):
+    """ThreadingHTTPServer 定制：客户端提前断开（刷新页面/服务重启瞬间的轮询中止）
+    是正常现象，Windows 上表现为 ConnectionAbortedError [WinError 10053]，
+    默认会把完整 traceback 打到控制台（exe 里尤其吓人），这里静默之；
+    其他异常仍走默认 handle_error 打印。"""
+
+    def handle_error(self, request, client_address) -> None:
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "nginx-manager/0.5.0"
     settings: SettingsStore = None  # type: ignore
@@ -1399,7 +1412,7 @@ def main() -> int:
     port = find_free_port(prefer_port)
     if port != prefer_port:
         print(f"[提示] 端口 {prefer_port} 被占用，改用随机端口 {port}")
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server = Server(("127.0.0.1", port), Handler)
     write_instance_lock(lock_path, os.getpid(), port)
     url = f"http://127.0.0.1:{port}"
     print(f"nginx 管理端已启动: {url}")
