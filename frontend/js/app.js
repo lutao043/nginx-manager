@@ -565,8 +565,8 @@ const App = (() => {
     }
   }
 
-  /* 目标地址池（模块内状态，加载后供下拉合并使用）
-     条目结构: {target, alias} */
+  /* 目标地址池（与 nginx.conf 合一：池 = 全部 proxy_pass 目标并集，读取自配置文件）
+     条目结构: {target, alias}，alias 为 proxy_pass 行尾注释 */
   let poolTargets = [];
 
   function poolTargetList() { return poolTargets.map((p) => p.target); }
@@ -595,7 +595,7 @@ const App = (() => {
   function renderPoolList() {
     const list = $("#poolList");
     if (!poolTargets.length) {
-      list.innerHTML = '<p class="muted">暂无目标地址，点击「添加目标」创建</p>';
+      list.innerHTML = '<p class="muted">暂无目标地址；地址池即配置文件中各代理的 proxy_pass 目标，可点击「添加目标」或添加代理创建</p>';
       return;
     }
     list.innerHTML = "";
@@ -626,14 +626,14 @@ const App = (() => {
   }
 
   async function doRemovePoolTarget(target) {
-    const ok = await confirmDialog("从目标池删除 " + target + "？\n已写入各代理的备选不受影响。");
+    if (inPreviewGuard("删除目标地址")) return;
+    const ok = await confirmDialog("从配置文件中删除目标地址 " + target + "？\n将移除所有代理中该地址的备选行（处于激活状态时会被拒绝，需先切换）。");
     if (!ok) return;
     try {
       await api.removePoolTarget(target);
-      poolTargets = poolTargets.filter((p) => p.target !== target);
-      renderPoolList();
-      loadProxies(); // 重新渲染下拉（去掉已删目标）
-      toast("已从池删除: " + target, "success");
+      toast("已删除目标: " + target, "success");
+      loadPool();
+      loadProxies();
     } catch (e) {
       toast(e.message, "error");
     }
@@ -648,6 +648,7 @@ const App = (() => {
   }
 
   async function confirmAddPool() {
+    if (inPreviewGuard("添加目标地址")) return;
     const target = $("#addPoolTarget").value.trim();
     const alias = $("#addPoolAlias").value.trim();
     if (!target) {
@@ -659,8 +660,7 @@ const App = (() => {
       const res = await api.addPoolTarget(target, alias);
       closeModal("#addPoolModal");
       unlockBody();
-      poolTargets = res.targets || [];
-      renderPoolList();
+      loadPool();
       loadProxies();
       toast(alias ? "已添加目标: " + alias : "已添加目标: " + target, "success");
     } catch (e) {
@@ -686,13 +686,13 @@ const App = (() => {
 
   async function savePoolAlias() {
     if (!editingPoolItem) return;
+    if (inPreviewGuard("编辑别名")) return;
     const alias = $("#addPoolAlias").value.trim();
     try {
-      const res = await api.setPoolAlias(editingPoolItem.target, alias);
+      await api.setPoolAlias(editingPoolItem.target, alias);
       closeModal("#addPoolModal");
       unlockBody();
-      poolTargets = res.targets || [];
-      renderPoolList();
+      loadPool();
       loadProxies();
       toast("别名已更新", "success");
     } catch (e) {
@@ -734,7 +734,8 @@ const App = (() => {
       const row = document.createElement("div");
       row.className = "proxy-item-row";
       const select = document.createElement("select");
-      // 下拉选项 = 目标池地址 ∪ 该代理已有地址（去重，保持顺序）；池地址带别名显示
+      // 下拉选项读取自配置文件（池 = 全部 proxy_pass 目标并集 ∪ 该代理已有地址，去重）；
+      // 选池中未写入本代理的地址时，后端切换会自动追加为备选
       const merged = [];
       poolTargets.forEach((pt) => { if (!merged.includes(pt.target)) merged.push(pt.target); });
       (p.targets || []).forEach((t) => { if (!merged.includes(t)) merged.push(t); });
@@ -792,6 +793,7 @@ const App = (() => {
       showProxyTest(res.test);
       toast("已切换: " + p.path + " → " + target, "success");
       loadProxies();
+      loadPool(); // 切换可能自动追加备选，配置文件已变化
       refreshStatus();
       // 切换成功后询问是否立即重载配置
       const reloadNow = await confirmDialog("配置已切换并校验通过。\n是否立即重载 nginx 配置？");
@@ -818,6 +820,7 @@ const App = (() => {
       showProxyTest(res.test);
       toast("已删除代理: " + p.path, "success");
       loadProxies();
+      loadPool(); // 代理删除后其独有目标从池中消失
       refreshStatus();
     } catch (e) {
       showProxyTest(e.payload && e.payload.test);
@@ -849,6 +852,7 @@ const App = (() => {
       showProxyTest(res.test);
       toast("已添加代理: " + path, "success");
       loadProxies();
+      loadPool(); // 新代理的激活目标进入地址池
       refreshStatus();
     } catch (e) {
       showAddProxyError(e.message);
@@ -927,6 +931,7 @@ const App = (() => {
       showProxyTest(res.test);
       toast("已更新备选目标", "success");
       loadProxies();
+      loadPool(); // 备选变化直接影响地址池
       refreshStatus();
     } catch (e) {
       $("#editTargetsError").textContent = e.message;

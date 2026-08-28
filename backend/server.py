@@ -179,68 +179,6 @@ class SettingsStore:
         return bool(self.data.get("nginxPath") and self.data.get("confDir"))
 
 
-class TargetPoolStore:
-    """目标地址池持久化。文件：<user_data>/targets.json
-    统一管理常用 proxy_pass 目标地址，供各代理下拉切换复用。
-    条目结构：[{"target": "http://...", "alias": "..."}]；兼容旧版纯字符串列表。"""
-
-    def __init__(self, root: str):
-        self.path = os.path.join(root, "targets.json")
-        self.targets: list = self._load()
-
-    def _load(self) -> list:
-        if os.path.isfile(self.path):
-            try:
-                with open(self.path, "r", encoding="utf-8") as f:
-                    d = json.load(f)
-                if isinstance(d, list):
-                    out = []
-                    for item in d:
-                        if isinstance(item, str):
-                            out.append({"target": item, "alias": ""})  # 旧版迁移
-                        elif isinstance(item, dict) and item.get("target"):
-                            out.append({"target": str(item["target"]), "alias": str(item.get("alias") or "")})
-                    return out
-            except (json.JSONDecodeError, OSError):
-                pass
-        return []
-
-    def save(self) -> None:
-        with open(self.path, "w", encoding="utf-8") as f:
-            json.dump(self.targets, f, ensure_ascii=False, indent=2)
-
-    def get(self, target: str) -> dict | None:
-        for item in self.targets:
-            if item["target"] == target:
-                return item
-        return None
-
-    def add(self, target: str, alias: str = "") -> bool:
-        target = target.strip()
-        if not target or self.get(target):
-            return False
-        self.targets.append({"target": target, "alias": alias.strip()})
-        self.save()
-        return True
-
-    def set_alias(self, target: str, alias: str) -> bool:
-        item = self.get(target.strip())
-        if item is None:
-            return False
-        item["alias"] = alias.strip()
-        self.save()
-        return True
-
-    def remove(self, target: str) -> bool:
-        target = target.strip()
-        item = self.get(target)
-        if item is None:
-            return False
-        self.targets.remove(item)
-        self.save()
-        return True
-
-
 # ---------- 备份 ----------
 
 def timestamp_id() -> str:
@@ -355,9 +293,8 @@ def pick_nginx_via_dialog() -> dict:
 # ---------- HTTP 处理 ----------
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "nginx-manager/0.3.2"
+    server_version = "nginx-manager/0.4.0"
     settings: SettingsStore = None  # type: ignore
-    pool: TargetPoolStore = None  # type: ignore
     data_dirs: dict = {}
     controller: NginxController = None  # type: ignore
 
@@ -929,23 +866,28 @@ class Handler(BaseHTTPRequestHandler):
           （backupId 为 None），避免无意义的冗余备份。
         - 内容有变化：先备份 → commit → nginx -t 校验；校验失败回滚原文并回 409；
           成功发成功响应。
+        - mutate 返回值中除 ok/error 外的键合并进成功响应（如池操作的 targets）。
         返回 True 表示响应已发送，调用方应 return。"""
         original = pm.content
         res = mutate(pm)
         if not res.get("ok"):
             err = res.get("error", "操作失败")
             status = 400
-            if "不存在" in err:
+            if "不存在" in err or "不在池中" in err:
                 status = 404
-            elif "备选" in err or "校验" in err:
+            elif "备选" in err or "校验" in err or "激活" in err or "已在池中" in err or "没有代理" in err:
                 status = 409
             self._err(status, err)
             return True
+        res_extra = {k: v for k, v in res.items() if k not in ("ok", "error")}
         if pm.content == original:
             # 无实际变化（如切换到已激活目标、备选列表与当前一致），不备份不校验
             proxy = next((p for p in pm.list_proxies() if p["path"] == path), None) if path else None
-            self._ok({"ok": True, "proxy": proxy, "backupId": None,
-                      "test": {"ok": True, "output": "配置无变化，未做改动"}, **(extra or {})})
+            payload = {"ok": True, "proxy": proxy, "backupId": None,
+                       "test": {"ok": True, "output": "配置无变化，未做改动"}}
+            payload.update(res_extra)
+            payload.update(extra or {})
+            self._ok(payload)
             return True
         backup_id = make_backup(self.data_dirs["backups"], self.controller.conf_dir, "nginx.conf")
         pm.commit()
@@ -959,7 +901,10 @@ class Handler(BaseHTTPRequestHandler):
             })
             return True
         proxy = next((p for p in pm.list_proxies() if p["path"] == path), None) if path else None
-        self._ok({"ok": True, "proxy": proxy, "backupId": backup_id, "test": result, **(extra or {})})
+        payload = {"ok": True, "proxy": proxy, "backupId": backup_id, "test": result}
+        payload.update(res_extra)
+        payload.update(extra or {})
+        self._ok(payload)
         return True
 
     def _api_proxies_get(self) -> None:
@@ -1009,49 +954,73 @@ class Handler(BaseHTTPRequestHandler):
         if self._proxy_apply(pm, mutate, path):
             return
 
-    # ---- 目标地址池 ----
+    # ---- 目标地址池（与 nginx.conf 合一：池 = 全部 proxy_pass 目标并集，增删改查直接写配置文件）----
 
     def _api_proxy_pool_get(self) -> None:
-        self._ok({"targets": list(Handler.pool.targets)})
+        if self.controller is None:
+            # 预览模式：无 nginx.conf，返回空池
+            self._ok({"targets": [], "preview": True})
+            return
+        pm = self._proxy_manager()
+        if pm is None:
+            return
+        self._ok({"targets": pm.pool_targets()})
 
     def _api_proxy_pool_add(self) -> None:
         body = self._read_json_body()
-        target = str(body.get("target", ""))
-        alias = str(body.get("alias", ""))
+        target = str(body.get("target", "")).strip()
+        alias = " ".join(str(body.get("alias", "")).split())
         if not target:
             self._err(400, "target 必填")
             return
-        from proxymgr import _normalize_target
-        if _normalize_target(target) is None:
-            self._err(400, f"目标地址不符合 URL 规则（需 http:// 或 https:// 或 unix:/ 前缀）: {target}")
+        pm = self._proxy_manager()
+        if pm is None:
             return
-        if not Handler.pool.add(target, alias):
-            self._err(409, f"目标已在池中: {target}")
+
+        def mutate(p):
+            res = p.pool_add(target, alias)
+            if res.get("ok"):
+                res["targets"] = p.pool_targets()
+            return res
+        if self._proxy_apply(pm, mutate):
             return
-        self._ok({"ok": True, "targets": list(Handler.pool.targets)})
 
     def _api_proxy_pool_put(self) -> None:
         body = self._read_json_body()
-        target = str(body.get("target", ""))
-        alias = str(body.get("alias", ""))
+        target = str(body.get("target", "")).strip()
+        alias = " ".join(str(body.get("alias", "")).split())
         if not target:
             self._err(400, "target 必填")
             return
-        if not Handler.pool.set_alias(target, alias):
-            self._err(404, f"目标不在池中: {target}")
+        pm = self._proxy_manager()
+        if pm is None:
             return
-        self._ok({"ok": True, "targets": list(Handler.pool.targets)})
+
+        def mutate(p):
+            res = p.pool_set_alias(target, alias)
+            if res.get("ok"):
+                res["targets"] = p.pool_targets()
+            return res
+        if self._proxy_apply(pm, mutate):
+            return
 
     def _api_proxy_pool_remove(self) -> None:
         body = self._read_json_body()
-        target = str(body.get("target", ""))
+        target = str(body.get("target", "")).strip()
         if not target:
             self._err(400, "target 必填")
             return
-        if not Handler.pool.remove(target):
-            self._err(404, f"目标不在池中: {target}")
+        pm = self._proxy_manager()
+        if pm is None:
             return
-        self._ok({"ok": True, "targets": list(Handler.pool.targets)})
+
+        def mutate(p):
+            res = p.pool_remove(target)
+            if res.get("ok"):
+                res["targets"] = p.pool_targets()
+            return res
+        if self._proxy_apply(pm, mutate):
+            return
 
     def _api_proxies_targets(self) -> None:
         pm = self._proxy_manager()
@@ -1129,6 +1098,62 @@ def _tkinter_available() -> bool:
         return False
 
 
+def migrate_legacy_pool(ctl: NginxController) -> None:
+    """一次性迁移：旧版目标地址池文件 targets.json（独立 JSON 存储）合并进 nginx.conf——
+    池中尚未存在于配置的地址，追加为所有代理块的注释备选；完成后将文件改名为
+    targets.json.migrated。失败不阻塞启动，保留原文件待下次重试。"""
+    from proxymgr import _normalize_target
+    legacy_path = os.path.join(Handler.data_dirs["root"], "targets.json")
+    if not os.path.isfile(legacy_path):
+        return
+    conf_path = ctl.main_conf_path()
+    if not os.path.isfile(conf_path):
+        print("[迁移] 跳过：主配置文件不存在，旧目标池 targets.json 保留")
+        return
+    try:
+        with open(legacy_path, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        if not isinstance(d, list):
+            os.replace(legacy_path, legacy_path + ".migrated")
+            return
+        pm = ProxyManager(conf_path)
+        existing = {t["target"] for t in pm.pool_targets()}
+        added = skipped = failed = 0
+        for item in d:
+            if isinstance(item, str):
+                target, alias = item.strip(), ""
+            elif isinstance(item, dict):
+                target = str(item.get("target") or "").strip()
+                alias = " ".join(str(item.get("alias") or "").split())
+            else:
+                skipped += 1
+                continue
+            if not target or target in existing:
+                skipped += 1
+                continue
+            if _normalize_target(target) is None:
+                print(f"[迁移] 跳过非法地址: {target}")
+                skipped += 1
+                continue
+            if pm.pool_add(target, alias).get("ok"):
+                existing.add(target)
+                added += 1
+            else:
+                failed += 1  # 如配置中没有任何代理块，暂无法写入
+        if added:
+            backup_id = make_backup(Handler.data_dirs["backups"], ctl.conf_dir, "nginx.conf")
+            pm.commit()
+            print(f"[迁移] 旧目标池 {added} 个地址已写入 nginx.conf（备份 {backup_id}）")
+        if failed:
+            print(f"[迁移] {failed} 个地址未能写入（如当前配置没有代理），targets.json 保留待下次重试")
+            return
+        os.replace(legacy_path, legacy_path + ".migrated")
+        if added or skipped:
+            print(f"[迁移] 旧目标池已合并进配置文件，原文件改名为 targets.json.migrated")
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"[迁移] 旧目标池迁移失败（忽略，不影响启动）: {e}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="nginx 轻量网页管理端")
     parser.add_argument("--port", type=int, default=None, help=f"监听端口（缺省 {DEFAULT_PORT}）")
@@ -1144,7 +1169,6 @@ def main() -> int:
     data_dirs = ensure_data_dirs()
     Handler.data_dirs = data_dirs
     Handler.settings = SettingsStore(data_dirs["root"])
-    Handler.pool = TargetPoolStore(data_dirs["root"])
     # 备份保留份数：settings 覆盖模块默认（0=不自动清理）
     global BACKUP_RETENTION
     BACKUP_RETENTION = int(Handler.settings.get("backupRetention", 7) or 7)
@@ -1187,6 +1211,8 @@ def main() -> int:
                 print(f"已保存配置: nginx={nginx_path}\n            confDir={conf_dir}")
 
         Handler.controller = create_controller(nginx_path, conf_dir)
+        # 旧版 targets.json 目标池合并进 nginx.conf（一次性，文件不存在时为空操作）
+        migrate_legacy_pool(Handler.controller)
     # 端口优先级：--port > settings.port > DEFAULT_PORT
     prefer_port = args.port or int(Handler.settings.get("port", 0) or 0) or DEFAULT_PORT
     port = find_free_port(prefer_port)

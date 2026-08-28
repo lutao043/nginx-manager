@@ -34,7 +34,7 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 2. **预览模式**：显式 `--preview` **且** `settings.json` 尚未配置有效 nginx；或当前环境无图形界面（tkinter 不可用，如服务器 / CI 本地调试）**且**未配置 nginx。
    - 预览模式下 `Handler.controller = None`，跳过 nginx 探测与选择对话框，服务照常启动、前端正常渲染。
    - **已配置有效 nginx 时即使带 `--preview` 也走正常模式**——避免「预览中配置 nginx 后重启服务」因 `--preview` 残留而重新丢回 `controller=None`。
-   - 预览模式不是只读沙盒：写操作（启停 / 重载 / 保存配置 / 代理增删切换）会因无 controller 返回 `409`；目标地址池（proxy-pool）不依赖 nginx，可正常使用。
+    - 预览模式不是只读沙盒：写操作（启停 / 重载 / 保存配置 / 代理增删切换 / 地址池增删改）会因无 controller 返回 `409`；目标地址池查询（GET proxy-pool）返回空池，不再独立于 nginx 存储。
    - 退出预览：在「设置」中填写有效的 nginx 路径与配置目录并保存，前端自动重载页面进入正常管理模式。
 
 **`preview` 标志来源**：后端 `/api/settings` 的 `preview` 字段 = `Handler.controller is None`，前端据此决定直接进入主界面（不弹首次向导）并展示「预览模式」徽章。
@@ -493,15 +493,18 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 
 统一管理常用目标地址，供所有代理的下拉切换复用，避免逐代理添加备选。
 
-**持久化**：目标池独立存储于用户数据目录 `targets.json`（不写入 nginx 配置），
-后端启动时加载，增删即持久化。兼容旧版纯字符串列表（自动迁移为带别名的结构）。
+**存储（与配置文件合一）**：地址池 = nginx.conf 中全部代理 `proxy_pass` 目标的并集
+（激活行 + `#proxy_pass` 注释备选行），**不再独立存储**（旧版 `targets.json` 已废弃，
+启动时自动把其中尚不存在的地址合并进配置文件并改名为 `targets.json.migrated`）。
+查询实时解析配置文件；增删改通过备份 → 写入 → `nginx -t` 校验 → 失败回滚的流水线落盘。
+别名存于 proxy_pass 行尾注释：`proxy_pass http://a; # 别名`（切换/编辑备选时保留）。
 
 ### PoolTarget（池条目模型）
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | target | string | 目标地址（nginx 合法 proxy_pass 参数，须 `http://`/`https://`/`unix:` 前缀 + 合法主机） |
-| alias | string | 显示别名（可空，用于记住 IP/域名含义，如「生产集群」「测试环境」） |
+| alias | string | 显示别名（可空，即该目标 proxy_pass 行的行尾注释，如「生产集群」「测试环境」） |
 
 **URL 校验规则**（`proxymgr._normalize_target`）：
 - 必须 `http://` 或 `https://` 或 `unix:` 开头；`unix:` 后须为 `/` 开头的 socket 路径。
@@ -510,13 +513,16 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 - 拒绝：纯裸 IP/域名（无协议）、含空白、含 `{}`、任意乱输的字符串。
 
 **与代理的关系**：
-- 前端渲染代理下拉框时，选项 = 目标池全部地址 ∪ 该代理已有备选地址（去重）；池地址带别名时显示 `别名 (地址)`。
-- 通过 `PUT /api/proxies/switch` 切换池中地址时，后端自动将该地址追加为该代理的备选并激活。
-- 删除池中地址**不影响**已写入各代理配置的备选（代理的备选独立存在于 nginx.conf）。
+- 池即配置：池条目必然存在于至少一个代理块中；某代理的备选必然在池中。
+- 前端渲染代理下拉框时，选项 = 池全部地址 ∪ 该代理已有备选（去重）；池地址带别名时显示 `别名 (地址)`。
+- 通过 `PUT /api/proxies/switch` 切换池中地址时，若该地址尚未写入此代理块，后端自动追加为备选并激活。
+- **POST（新增）**：向当前所有代理块追加该地址的注释备选行（不改变激活目标）；当前配置没有任何代理块时返回 `409`。
+- **PUT（改别名）**：重写该地址所有 proxy_pass 行的行尾注释。
+- **DELETE（删除）**：从所有代理块移除该地址的备选行；若它在某个代理中处于激活状态则返回 `409`，需先切换。
 
 ### GET /api/proxy-pool
 
-返回目标地址池。
+返回目标地址池（实时解析配置文件）。
 
 **成功响应 200**
 
@@ -524,9 +530,11 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 { "targets": [ { "target": "http://docker_balance", "alias": "生产Docker集群" }, { "target": "http://10.170.103.65:10040/", "alias": "" } ] }
 ```
 
+- **预览模式**：返回 `{"targets": [], "preview": true}`。
+
 ### POST /api/proxy-pool
 
-添加目标地址（可带别名）。
+添加目标地址（可带别名）。向当前所有代理块追加该地址的注释备选行，随后自动备份 + `nginx -t` 校验（失败回滚）。
 
 **请求体**
 
@@ -537,16 +545,17 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 **成功响应 200**
 
 ```json
-{ "ok": true, "targets": [ { "target": "http://zhang_balance", "alias": "张哥环境" } ] }
+{ "ok": true, "targets": [ { "target": "http://zhang_balance", "alias": "张哥环境" } ], "backupId": "20260828_120000", "test": { "ok": true, "output": "..." } }
 ```
 
 **错误**
 - `400`：target 缺失或不符合 URL 校验规则（不能随便输入字符串）。
-- `409`：target 已存在于池中（去重，按 target 去重）。
+- `409`：target 已存在于池中（按 target 去重）；或当前配置没有任何代理块，无法写入。
+- `409`：校验失败（已回滚）。
 
 ### PUT /api/proxy-pool
 
-更新池条目的别名（或仅新增别名）。
+更新池条目的别名（写入行尾注释；留空即清除别名）。自动备份 + `nginx -t` 校验，失败回滚。
 
 **请求体**
 
@@ -557,16 +566,17 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 **成功响应 200**
 
 ```json
-{ "ok": true, "targets": [ { "target": "http://zhang_balance", "alias": "张哥测试环境" } ] }
+{ "ok": true, "targets": [ { "target": "http://zhang_balance", "alias": "张哥测试环境" } ], "backupId": "20260828_120000", "test": { "ok": true, "output": "..." } }
 ```
 
 **错误**
 - `400`：target 缺失。
 - `404`：target 不在池中。
+- `409`：校验失败（已回滚）。
 
 ### DELETE /api/proxy-pool
 
-删除目标地址。
+删除目标地址：从所有代理块移除该地址的备选行。自动备份 + `nginx -t` 校验，失败回滚。
 
 **请求体**
 
@@ -577,12 +587,13 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 **成功响应 200**
 
 ```json
-{ "ok": true, "targets": [] }
+{ "ok": true, "targets": [], "backupId": "20260828_120000", "test": { "ok": true, "output": "..." } }
 ```
 
 **错误**
 - `400`：target 缺失。
 - `404`：target 不在池中。
+- `409`：该地址在某代理中处于激活状态（需先切换）；或校验失败（已回滚）。
 
 ## 前端行为约定
 
@@ -596,5 +607,5 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 - **代理搜索过滤**：代理管理页顶部提供搜索框，按代理路径（`path`）、目标地址（`targets`）实时过滤列表；
   输入即过滤（不触发后端请求），空关键词恢复全量列表；提供「清除搜索」按钮一键清空关键词并恢复全量。
 - **预览模式**：`GET /api/settings` 返回 `preview: true` 时，前端跳过首次配置向导直接进入主界面，状态徽章显示「预览模式」；
-  写操作（启动/停止/重载/重启/校验、保存配置、代理增删切换、编辑备选）统一拦截并提示「请先在设置中配置 nginx」；
+  写操作（启动/停止/重载/重启/校验、保存配置、代理增删切换、编辑备选、地址池增删改）统一拦截并提示「请先在设置中配置 nginx」；
   在「设置」中填好 nginx 路径并保存后，前端自动 `reload()` 退出预览进入正常管理模式。

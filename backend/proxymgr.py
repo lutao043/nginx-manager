@@ -5,6 +5,8 @@
   - 一个代理 = 一个 `location <path> { ... }` 块，块内必须有 proxy_pass 指令。
   - 激活目标 = 块内唯一未注释的 `proxy_pass <url>;` 行。
   - 备选目标 = 块内 `#proxy_pass <url>;` 注释行（切换 = 互换注释状态）。
+  - 目标地址池 = 全部代理 proxy_pass 目标的并集（含注释备选），直接读写配置文件：
+    池条目别名存于 proxy_pass 行尾注释（`proxy_pass http://a; # 别名`）。
   - 只识别包含 proxy_pass 的 location 块；静态资源 location 不进入代理列表。
 
 修改一律"整文件文本替换 + nginx -t 校验"，失败恢复原文（调用方负责备份/校验编排）。
@@ -15,7 +17,8 @@ import os
 import re
 from typing import List, Optional
 
-PROXY_PASS_RE = re.compile(r"^(\s*)(#\s*)?proxy_pass\s+(.+?);\s*$")
+# 行尾别名注释：`proxy_pass http://a; # 别名`（'#' 前须有空白，避免误伤 URL 中的 '#'）
+PROXY_PASS_RE = re.compile(r"^(\s*)(#\s*)?proxy_pass\s+(.+?);\s*(?:#\s*(.*?))?\s*$")
 LOCATION_RE = re.compile(r"^(\s*)location\s+(.+?)\s*\{")
 
 
@@ -29,6 +32,7 @@ class ProxyBlock:
         self.pp_lines: List[int] = []      # proxy_pass 行索引（含注释）
         self.pp_active: Optional[int] = None  # 激活行索引
         self.pp_values: dict = {}          # 行索引 -> url
+        self.pp_comments: dict = {}        # 行索引 -> 行尾别名注释
 
     @property
     def active(self) -> Optional[str]:
@@ -38,6 +42,13 @@ class ProxyBlock:
     def targets(self) -> List[str]:
         """按配置顺序返回全部目标地址。"""
         return [self.pp_values[i] for i in sorted(self.pp_lines)]
+
+    def alias_of(self, url: str) -> str:
+        """返回该 url 的行尾别名注释（多行同 url 时取第一个非空）。"""
+        for idx in sorted(self.pp_lines):
+            if self.pp_values.get(idx) == url and self.pp_comments.get(idx):
+                return self.pp_comments[idx]
+        return ""
 
 
 def _strip_inline_comment(line: str) -> str:
@@ -92,6 +103,8 @@ def parse_proxies(content: str) -> List[ProxyBlock]:
                 url = pm.group(3).strip()
                 block.pp_lines.append(j)
                 block.pp_values[j] = url
+                if pm.group(4):
+                    block.pp_comments[j] = pm.group(4).strip()
                 if not pm.group(2):  # 未注释 → 激活
                     block.pp_active = j
         if block.pp_lines:
@@ -130,6 +143,18 @@ def _normalize_path(path: str) -> Optional[str]:
     return p
 
 
+def _sanitize_alias(alias: str) -> str:
+    """别名仅作为行尾注释文本：压平所有空白字符，防止破坏行结构。"""
+    return " ".join((alias or "").split())
+
+
+def _pp_line(indent: str, commented: bool, url: str, alias: str = "") -> str:
+    """渲染一行 proxy_pass（可带注释前缀与行尾别名注释）。"""
+    prefix = "#" if commented else ""
+    suffix = f" # {alias}" if alias else ""
+    return f"{indent}{prefix}proxy_pass {url};{suffix}"
+
+
 def _render_switch(lines: List[str], block: ProxyBlock, target: str) -> bool:
     """把 target 切换为激活（取消其注释、注释掉原激活行）。返回是否成功。"""
     target_line = None
@@ -144,11 +169,12 @@ def _render_switch(lines: List[str], block: ProxyBlock, target: str) -> bool:
         m = PROXY_PASS_RE.match(lines[idx])
         if not m:
             continue
-        indent, commented, url = m.group(1), m.group(2), m.group(3).strip()
+        indent, commented, url = m.group(1), bool(m.group(2)), m.group(3).strip()
+        alias = block.pp_comments.get(idx, "")
         if idx == target_line:
-            lines[idx] = f"{indent}proxy_pass {url};"
+            lines[idx] = _pp_line(indent, False, url, alias)
         elif idx == old_active and idx != target_line:
-            lines[idx] = f"{indent}#proxy_pass {url};"
+            lines[idx] = _pp_line(indent, True, url, alias)
     return True
 
 
@@ -171,8 +197,8 @@ def _render_targets(lines: List[str], block: ProxyBlock, targets: List[str]) -> 
         if j in block.pp_lines:
             if not inserted:
                 for url in targets:
-                    commented = "#" if url != active_url else ""
-                    new_lines.append(f"{indent}{commented}proxy_pass {url};")
+                    alias = block.alias_of(url)
+                    new_lines.append(_pp_line(indent, url != active_url, url, alias))
                 inserted = True
             # 跳过旧行
             continue
@@ -347,6 +373,84 @@ class ProxyManager:
         self.content = content
         self._write(content)
         self.reload()
+
+    # ---- 目标地址池（与配置文件合一：池 = 全部 proxy_pass 目标并集，增删改查直接写 conf）----
+
+    def pool_targets(self) -> List[dict]:
+        """返回地址池：全部代理 proxy_pass 目标（激活+注释备选）按出现顺序去重，
+        别名取行尾注释（同 url 多行时取第一个非空别名）。"""
+        self._refresh()
+        out: List[dict] = []
+        for b in self.blocks:
+            for idx in b.pp_lines:
+                url = b.pp_values[idx]
+                alias = b.pp_comments.get(idx, "")
+                item = next((x for x in out if x["target"] == url), None)
+                if item is None:
+                    out.append({"target": url, "alias": alias})
+                elif alias and not item["alias"]:
+                    item["alias"] = alias
+        return out
+
+    def pool_add(self, target: str, alias: str = "") -> dict:
+        """池新增：校验后把 target 追加为所有代理块的注释备选行（不改变激活目标）。"""
+        target = (target or "").strip()
+        alias = _sanitize_alias(alias)
+        if _normalize_target(target) is None:
+            return {"ok": False, "error": f"target 非法: {target}"}
+        self._refresh()
+        if any(url == target for b in self.blocks for url in b.pp_values.values()):
+            return {"ok": False, "error": f"目标已在池中: {target}"}
+        if not self.blocks:
+            return {"ok": False, "error": "当前配置中没有代理，无法添加目标地址（请先添加代理）"}
+        lines = self.content.split("\n")
+        # 依块尾倒序插入，避免行号偏移；新行放在每块最后一个 proxy_pass 行之后
+        for b in sorted(self.blocks, key=lambda x: x.end, reverse=True):
+            last_pp = max(b.pp_lines)
+            m = PROXY_PASS_RE.match(lines[last_pp])
+            indent = m.group(1) if m and m.group(1) else "    "
+            lines.insert(last_pp + 1, _pp_line(indent, True, target, alias))
+        self.content = "\n".join(lines)
+        return {"ok": True}
+
+    def pool_set_alias(self, target: str, alias: str) -> dict:
+        """池改别名：重写该目标所有 proxy_pass 行的行尾注释（别名留空即清除）。"""
+        target = (target or "").strip()
+        alias = _sanitize_alias(alias)
+        self._refresh()
+        hits = [(b, idx) for b in self.blocks for idx in b.pp_lines if b.pp_values[idx] == target]
+        if not hits:
+            return {"ok": False, "error": f"目标不在池中: {target}"}
+        lines = self.content.split("\n")
+        for _, idx in hits:
+            m = PROXY_PASS_RE.match(lines[idx])
+            if not m:
+                continue
+            indent, commented, url = m.group(1), bool(m.group(2)), m.group(3).strip()
+            lines[idx] = _pp_line(indent, commented, url, alias)
+        self.content = "\n".join(lines)
+        return {"ok": True}
+
+    def pool_remove(self, target: str) -> dict:
+        """池删除：从所有代理块移除该目标的 proxy_pass 行；
+        若在某个代理中处于激活状态则拒绝（返回 409 语义错误），需先切换。"""
+        target = (target or "").strip()
+        self._refresh()
+        idxs: List[int] = []
+        for b in self.blocks:
+            for idx in b.pp_lines:
+                if b.pp_values[idx] == target:
+                    if b.active == target:
+                        return {"ok": False,
+                                "error": f"目标在代理 {b.path} 中处于激活状态，请先切换其他目标后再删除"}
+                    idxs.append(idx)
+        if not idxs:
+            return {"ok": False, "error": f"目标不在池中: {target}"}
+        lines = self.content.split("\n")
+        for idx in sorted(idxs, reverse=True):
+            del lines[idx]
+        self.content = "\n".join(lines)
+        return {"ok": True}
 
     def commit(self) -> None:
         """写回磁盘。"""
