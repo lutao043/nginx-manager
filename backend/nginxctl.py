@@ -219,11 +219,35 @@ class NginxController:
 
     # ---------- 进程控制 ----------
 
+    @staticmethod
+    def _clean_stale_pid_file(prefix: str) -> None:
+        """清理空或损坏的 nginx.pid 文件。
+
+        nginx 异常退出（崩溃/被强杀/断电）时 pid 文件可能残留为空或含非数字内容，
+        导致下次 nginx 启动/重载时报「invalid PID number ""」。
+        此方法在 start/reload/restart 前调用，安全删除无效文件（nginx 启动时会自动重建）。
+        """
+        pid_file = os.path.join(prefix, "logs", "nginx.pid")
+        if not os.path.isfile(pid_file):
+            return
+        try:
+            raw = open(pid_file, "r", encoding="utf-8").read().strip()
+            if not raw:
+                os.remove(pid_file)
+                return
+            int(raw)  # 验证是否为有效整数
+        except (ValueError, OSError):
+            try:
+                os.remove(pid_file)
+            except OSError:
+                pass
+
     def start(self) -> Tuple[bool, str]:
         """启动 nginx。关键：master 常驻不退出，必须用 Popen 分离启动，
         不能用 subprocess.run（会因不退出而超时，超时后连带杀掉 master 进程树）。"""
         if not os.path.isfile(self.nginx_path):
             return False, f"nginx 可执行文件不存在: {self.nginx_path}"
+        self._clean_stale_pid_file(self.prefix)  # 清理空/损坏 pid 文件
         # 启动前先校验配置，拿错误信息（比启动失败后再猜原因直观）
         code, result = self.test_config()
         if not result.get("ok"):
@@ -261,6 +285,7 @@ class NginxController:
         info = self.detect_process()
         if not (info and info["running"]):
             return False, "nginx 未在运行"
+        self._clean_stale_pid_file(self.prefix)  # 重载前清理，避免 nginx 读空 pid 报错
         code, _out, err = _run(self._base_cmd() + ["-s", "reload"], timeout=15)
         if code != 0:
             detail = (err or _out).strip()
@@ -272,6 +297,7 @@ class NginxController:
         if info and info["running"]:
             self.stop()
             time.sleep(1.0)
+        self._clean_stale_pid_file(self.prefix)  # 重启前清理
         return self.start()
 
     # ---------- 配置树 / include 解析 ----------
