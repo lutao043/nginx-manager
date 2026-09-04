@@ -583,8 +583,8 @@ class Handler(BaseHTTPRequestHandler):
                 "confPath": None, "confFileExists": False,
             })
             return
-        now = time.time()
         with _status_lock:
+            now = time.time()  # 锁内取时间：等锁期间前任检测可能刚刷新缓存
             cached = _status_cache["data"]
             if cached is not None and now - _status_cache["ts"] < _STATUS_TTL:
                 data = cached

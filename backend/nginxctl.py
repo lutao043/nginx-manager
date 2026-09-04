@@ -88,13 +88,31 @@ class NginxController:
     # ---------- 版本 / 进程 ----------
 
     def get_version(self) -> Optional[str]:
+        """nginx -v 结果缓存：版本随 exe 固定，无需每次起子进程；exe 被替换（mtime 变化）时自动失效。"""
+        try:
+            mtime = os.path.getmtime(self.nginx_path)
+        except OSError:
+            mtime = None
+        cached = getattr(self, "_version_cache", None)
+        if cached and cached[0] == self.nginx_path and cached[1] == mtime:
+            return cached[2]
         code, _out, err = _run(self._base_cmd() + ["-v"], timeout=10)
         output = (err or _out).strip()
         m = re.search(r"nginx/([\d.]+)", output)
-        return m.group(1) if m else None
+        version = m.group(1) if m else None
+        self._version_cache = (self.nginx_path, mtime, version)
+        return version
 
     def _windows_nginx_procs(self) -> List[dict]:
-        """Windows：通过 CIM 获取 nginx.exe 进程（含可执行路径，用于匹配多版本场景）。"""
+        """Windows：通过 CIM 获取 nginx.exe 进程（含可执行路径，用于匹配多版本场景）。
+
+        PowerShell 在部分环境（杀毒扫描/策略限制）下会卡到数十秒，两道防线：
+        1. 超时收紧到 8s，快速降级 tasklist；
+        2. 连续失败 2 次后熔断——本次运行内不再尝试 PowerShell，直接走 tasklist。
+        """
+        # 熔断命中：直接走降级路径
+        if getattr(self, "_ps_broken", False):
+            return self._tasklist_nginx_procs()
         ps_script = (
             "[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
             "Get-CimInstance Win32_Process -Filter \"Name='nginx.exe'\" "
@@ -103,20 +121,18 @@ class NginxController:
         try:
             code, out, err = _run(
                 ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
-                timeout=20,
+                timeout=8,
             )
         except Exception:
             code, out, err = 1, "", ""
         if code != 0 or not out.strip():
-            # 降级：tasklist 仅按文件名
-            code, out, _ = _run(["tasklist", "/FI", "IMAGENAME eq nginx.exe", "/FO", "CSV", "/NH"], timeout=15)
-            procs = []
-            for line in out.splitlines():
-                parts = [p.strip().strip('"') for p in line.split('","')]
-                if len(parts) >= 2 and parts[0].lower() == "nginx.exe":
-                    pid = parts[1] if parts[1].isdigit() else None
-                    procs.append({"pid": int(pid) if pid else None, "exePath": None})
-            return procs
+            # 连续失败计数，达到 2 次熔断
+            fails = getattr(self, "_ps_fail_count", 0) + 1
+            self._ps_fail_count = fails
+            if fails >= 2:
+                self._ps_broken = True
+            return self._tasklist_nginx_procs()
+        self._ps_fail_count = 0
         try:
             import json
 
@@ -131,6 +147,18 @@ class NginxController:
             return procs
         except Exception:
             return []
+
+    @staticmethod
+    def _tasklist_nginx_procs() -> List[dict]:
+        """降级：tasklist 仅按文件名，拿不到 exePath（多版本精确匹配失效，退化为单实例判定）。"""
+        code, out, _ = _run(["tasklist", "/FI", "IMAGENAME eq nginx.exe", "/FO", "CSV", "/NH"], timeout=15)
+        procs = []
+        for line in out.splitlines():
+            parts = [p.strip().strip('"') for p in line.split('","')]
+            if len(parts) >= 2 and parts[0].lower() == "nginx.exe":
+                pid = parts[1] if parts[1].isdigit() else None
+                procs.append({"pid": int(pid) if pid else None, "exePath": None})
+        return procs
 
     def _posix_nginx_pid(self) -> Optional[int]:
         """类 Unix：优先读 pid 文件，其次 pgrep。"""
