@@ -378,11 +378,33 @@ def pick_nginx_via_dialog() -> dict:
 
 # ---------- HTTP 处理 ----------
 
+# /api/status 检测结果缓存：detect_process 每次要跑 nginx -v + PowerShell/tasklist
+# 子进程（Windows 上 PowerShell 冷启动可达数秒，最坏 20-45s），前端 10s 轮询
+# 每次都真跑会堆积请求线程。TTL 15s：每两次轮询才真实检测一次，锁保证同一
+# 时刻只有一个线程在跑子进程，其余请求拿到缓存立即返回。
+_STATUS_TTL = 15.0
+_status_cache = {"data": None, "ts": 0.0}
+_status_lock = threading.Lock()
+
+
+def _invalidate_status_cache() -> None:
+    """nginx 启停/重载/重启后调用，让下次轮询强制真实检测。"""
+    with _status_lock:
+        _status_cache["ts"] = 0.0
+
+
 class Server(ThreadingHTTPServer):
-    """ThreadingHTTPServer 定制：客户端提前断开（刷新页面/服务重启瞬间的轮询中止）
-    是正常现象，Windows 上表现为 ConnectionAbortedError [WinError 10053]，
-    默认会把完整 traceback 打到控制台（exe 里尤其吓人），这里静默之；
-    其他异常仍走默认 handle_error 打印。"""
+    """ThreadingHTTPServer 定制：
+    1. 客户端提前断开（刷新页面/服务重启瞬间的轮询中止）是正常现象，Windows 上
+       表现为 ConnectionAbortedError [WinError 10053]，默认会把完整 traceback
+       打到控制台（exe 里尤其吓人），这里静默之；其他异常仍走默认 handle_error 打印。
+    2. request_queue_size 默认仅 5（listen backlog）：/api/status 每次要跑
+       PowerShell/tasklist 子进程（最坏 20-45s），轮询堆积时 backlog 满，
+       新连接直接被拒——表现就是「服务假死、必须重启」。加大到 128。
+    3. daemon_threads=True：进程退出时不等待残留请求线程。"""
+
+    request_queue_size = 128
+    daemon_threads = True
 
     def handle_error(self, request, client_address) -> None:
         exc = sys.exc_info()[1]
@@ -561,17 +583,26 @@ class Handler(BaseHTTPRequestHandler):
                 "confPath": None, "confFileExists": False,
             })
             return
-        info = self.controller.detect_process()
-        conf_path = self.controller.main_conf_path()
-        self._ok({
-            "running": info.get("running", False),
-            "version": info.get("version"),
-            "pid": info.get("pid"),
-            "nginxPath": self.controller.nginx_path,
-            "confDir": self.controller.conf_dir,
-            "confPath": conf_path,
-            "confFileExists": os.path.isfile(conf_path),
-        })
+        now = time.time()
+        with _status_lock:
+            cached = _status_cache["data"]
+            if cached is not None and now - _status_cache["ts"] < _STATUS_TTL:
+                data = cached
+            else:
+                info = self.controller.detect_process()
+                conf_path = self.controller.main_conf_path()
+                data = {
+                    "running": info.get("running", False),
+                    "version": info.get("version"),
+                    "pid": info.get("pid"),
+                    "nginxPath": self.controller.nginx_path,
+                    "confDir": self.controller.conf_dir,
+                    "confPath": conf_path,
+                    "confFileExists": os.path.isfile(conf_path),
+                }
+                _status_cache["data"] = data
+                _status_cache["ts"] = time.time()
+        self._ok(data)
 
     def _api_config(self) -> None:
         if self.controller is None:
@@ -714,6 +745,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         ok, msg = ctl.start()
         if ok:
+            _invalidate_status_cache()
             self._ok({"ok": True, "message": msg})
         else:
             self._err(500, msg)
@@ -724,6 +756,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         ok, msg = ctl.stop()
         if ok:
+            _invalidate_status_cache()
             self._ok({"ok": True, "message": msg})
         else:
             self._err(409, msg)
@@ -734,6 +767,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         ok, msg = ctl.reload()
         if ok:
+            _invalidate_status_cache()
             self._ok({"ok": True, "message": msg})
         else:
             self._err(500, msg)
@@ -744,6 +778,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         ok, msg = ctl.restart()
         if ok:
+            _invalidate_status_cache()
             self._ok({"ok": True, "message": msg})
         else:
             self._err(500, msg)
@@ -986,6 +1021,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             data_dir_changed = True
         Handler.controller = create_controller(nginx_path, conf_dir)
+        _invalidate_status_cache()  # nginx 路径变化，检测对象已不同
         if data_dir_changed:
             # 延迟 0.5s 让响应先返回；新实例按指针文件从新目录读取配置
             threading.Timer(0.5, spawn_and_exit, args=(restart_command(),)).start()
