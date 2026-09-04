@@ -198,15 +198,17 @@ class NginxController:
             procs = self._windows_nginx_procs()
             running_proc = None
             for p in procs:
-                # 匹配可执行路径；多版本共存时只认配置指向的那个
+                # 精确匹配可执行路径；多版本共存时只认配置指向的那个
                 if p.get("exePath"):
                     if os.path.normcase(os.path.abspath(p["exePath"])) == os.path.normcase(self.nginx_path):
                         running_proc = p
                         break
+            # 找不到精确路径匹配时（tasklist 降级模式无 exePath / 多实例共存）：
+            # 只要存在 nginx.exe 进程就视为运行中。不要求恰好 1 个——多实例场景下
+            # len(procs) > 1 是正常状态（旧 master 未退出 + 新 master 已启动），返回 False 会导致
+            # restart() 跳过 stop 直接 start() → 实例越积越多。
             if running_proc is None and procs:
-                # 找不到精确路径匹配时，若只存在一份 nginx.exe 则视为正在运行
-                if len(procs) == 1:
-                    running_proc = procs[0]
+                running_proc = procs[0]
             return {
                 "running": running_proc is not None,
                 "pid": running_proc["pid"] if running_proc else None,
@@ -271,13 +273,20 @@ class NginxController:
         return False, "nginx 启动失败：请检查端口占用或错误日志"
 
     def stop(self) -> Tuple[bool, str]:
+        """仅用 -s quit（优雅退出），不使用 -s stop（强制停止）。
+
+        -s stop 会立即终止 master + 所有 worker，可能丢失处理中的请求；
+        且在多实例场景下容易误伤其他 nginx 进程。
+        优雅退出失败时返回错误信息让用户决定下一步（手动排查或重启服务），
+        而非静默升级为更激进的信号。
+        """
         info = self.detect_process()
-        if not (info and info["running"]):
-            return False, "nginx 未在运行"
+        # 即使 detect 说未运行也尝试 quit：多实例场景下检测可能不准，
+        # 发送 quit 给 pid 文件指向的 master 是安全的（无进程时不报错）。
         code, _out, err = _run(self._base_cmd() + ["-s", "quit"], timeout=15)
         if code != 0:
-            # 优雅退出失败，强制 stop
-            _run(self._base_cmd() + ["-s", "stop"], timeout=15)
+            detail = (err or _out).strip()
+            return False, f"nginx 优雅退出失败" + (f": {detail}" if detail else "")
         time.sleep(1.0)
         return True, "nginx 已停止"
 
@@ -293,10 +302,10 @@ class NginxController:
         return True, "nginx 配置已重载"
 
     def restart(self) -> Tuple[bool, str]:
-        info = self.detect_process()
-        if info and info["running"]:
-            self.stop()
-            time.sleep(1.0)
+        # 无论 detect 结果如何，先尝试优雅退出（多实例场景下检测可能不准，
+        # 漏停旧实例会导致 start 再开一个新实例，实例越积越多）
+        _run(self._base_cmd() + ["-s", "quit"], timeout=15)
+        time.sleep(1.5)
         self._clean_stale_pid_file(self.prefix)  # 重启前清理
         return self.start()
 
