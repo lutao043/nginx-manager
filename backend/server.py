@@ -419,7 +419,7 @@ class Server(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "nginx-manager/0.5.4"
+    server_version = "nginx-manager/0.6.0"
     settings: SettingsStore = None  # type: ignore
     data_dirs: dict = {}
     controller: NginxController = None  # type: ignore
