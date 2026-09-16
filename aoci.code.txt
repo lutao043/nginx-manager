@@ -1,0 +1,44 @@
+#AOCI-CODE-VOLUME: 1
+
+===/Users/lutao/code/nginx-manager/===
+.gitattributes[FV5T]: F:强制全部文本文件在所有平台检出为LF，保证AOCI基线按原始字节比对不因autocrlf改写而全仓误报漂移 | R:- | A:二进制文件由git自动识别，不受行尾改写影响 | S:-
+.gitignore[FV4T]: F:声明git排除：构建产物(build/dist)、运行时数据兜底(data/)、Python缓存、测试产物、本地测试nginx(nginx-1.30.4/)、IDE文件与自动生成的version_info.py | R:- | A:data/实际写在用户数据目录，此处仅兜底忽略本地副本 | S:-
+AGENTS.md[SZ6S]: F:AOCI写入的宿主Agent指令区块：规定仓库认知的建立、复用、恢复与任务收尾维护原则 | R:code:aoci.txt | A:aoci:begin/end标记区块由AOCI工具维护，不手改；会话合同以aoci_rules实时返回为准 | S:-
+API.md[SU9L]: F:前后端HTTP契约唯一权威源：全部/api端点定义、资源模型（Settings/FileNode/BackupInfo/ProxyInfo/PoolTarget）、错误语义与前端行为约定 | R:code:backend/server.py,code:frontend/js/api.js,code:frontend/js/app.js | A:契约纪律：接口变更先改本文件再改backend再同步frontend；错误统一{error,detail?}+非2xx状态码；409+saved:true为「已保存未应用」特殊语义，前端须展示警告条与回滚入口 | S:-
+README.en.md[SL3T]: F:英文版项目说明：功能特性、快速开始与安全提示，内容与中文README对应 | R:code:README.md | A:- | S:-
+README.md[SG6T]: F:项目主文档：功能特性、Windows与源码快速开始、启动参数、数据目录、经nginx反代访问、打包方式与安全说明 | R:code:API.md,code:SECURITY_AUDIT.md,code:VIBE_CODING_GUIDE.md,code:README.en.md | A:服务仅监听127.0.0.1:8310且无鉴权，勿暴露公网；Windows推荐直接使用Releases单文件exe | S:-
+SECURITY_AUDIT.md[SS7T]: F:安全审计：攻击面总览与逐项结论（网络暴露、路径穿越、命令注入、XSS、鉴权、敏感数据、DoS、供应链）及加固优先级清单 | R:code:backend/server.py,code:backend/nginxctl.py | A:威胁模型为单机本机工具；P1的CSRF防护已落地（写操作校验X-Requested-With）；P2的token鉴权未实现 | S:-
+VIBE_CODING_GUIDE.md[SG7S]: F:项目开发规范：技术选型决策、目录结构、契约纪律、数据与安全约定、编码风格、测试验证与Git提交纪律 | R:code:API.md,code:backend/server.py,code:frontend/js/api.js | A:技术选型勿随意变更：后端零第三方依赖、前端零构建零框架、无鉴权仅127.0.0.1；路径参数必须过_safe_rel与_in_conf_dir双校验；命令一律列表参数shell=False；前端渲染用户数据必须textContent或escapeHtml | S:-
+build.py[OV6S]: F:一键打包脚本：从server.py提取版本号、生成version_info.py、检查tkinter与PyInstaller、执行PyInstaller并校验dist/nginx-manager-v{版本}单文件产物 | R:code:backend/server.py,code:.gitea/workflows/build.yml,code:.github/workflows/build.yml | A:版本号唯一来源为server_version；仅Windows生成version_info.py（已gitignore）；构建前把build/dist改名为*_prev备份；沙箱shim临时替换os.remove绕过回收站策略 | S:打包Python必须自带tcl/tk：精简Python缺_tkinter.pyd时collect_submodules也收不进去，exe首次弹选择框即崩（v0.1.1事故）
+nginx-manager.spec[OV7T]: F:PyInstaller打包配置：以backend/server.py为入口的onefile单文件exe，frontend目录作为资源打入，产物名nginx-manager-v{版本} | R:code:backend/server.py,code:build.py | A:版本号在spec内独立从server_version提取（与build.py同源双读）；Windows下挂version_info.py生成exe文件属性；console=True保留控制台输出 | S:勿把tkinter加入excludes：函数内import tkinter依赖PyInstaller静态分析自动收齐_tkinter.pyd与tcl/tk DLL，首次选择框与「浏览…」按钮依赖它
+
+===/Users/lutao/code/nginx-manager/.gitea/workflows/===
+build.yml[OV6T]: F:Gitea Actions发布流水线：推送v*.*.* tag触发，构建macOS(arm64)与Windows(amd64)双平台产物并自动创建Release | R:code:build.py,code:.github/workflows/build.yml | A:双构建job汇入release job；产物目录nginx-manager-macos/与nginx-manager-windows/；Python 3.13临时环境pip安装PyInstaller | S:-
+
+===/Users/lutao/code/nginx-manager/.github/workflows/===
+build.yml[OV6T]: F:GitHub Actions发布流水线：推送v*.*.* tag触发，仅构建Windows exe并以gh release create发布 | R:code:build.py,code:.gitea/workflows/build.yml | A:与Gitea流水线分工，本文件只出Windows产物；产物通配nginx-manager-v*.exe | S:-
+
+===/Users/lutao/code/nginx-manager/.workbuddy/memory/===
+2026-08-04.md[SZ2S]: F:项目启动日志：敲定nginx轻量网页管理端方案——Python标准库后端、原生前端、标准版功能档位与目录结构约定 | R:- | A:- | S:-
+2026-08-05.md[SZ2T]: F:开发日志：v0.1/v0.1.1两次定位并修复exe的tkinter缺失，记录PyInstaller打包教训 | R:code:build.py | A:根因是打包用Python缺tcl/tk，collect_submodules补不了_tkinter.pyd | S:-
+2026-08-25.md[SZ2T]: F:开发日志：CSRF防护落地、proxymgr注释处理与冗余备份修复、style.css两轮重写、预览模式设计 | R:- | A:- | S:-
+2026-09-04.md[SZ2T]: F:开发日志：服务假死根因（listen backlog过小+状态检测阻塞）与修复、v0.5.1发版、PowerShell检测链熔断加固 | R:code:backend/server.py,code:backend/nginxctl.py | A:- | S:-
+
+===/Users/lutao/code/nginx-manager/.zcode/===
+config.json[FC5T]: F:ZCode工作区级MCP配置：声明aoci stdio server，ZCode会话启动时自动连接 | R:- | A:command与args为机器绑定绝对路径（aoci二进制与本仓库根），迁移机器须改写 | S:-
+
+===/Users/lutao/code/nginx-manager/backend/===
+nginxctl.py[IB9L]: F:nginx跨平台控制核心：-t语法校验、start/stop/reload/restart进程控制、运行进程与版本检测、include递归解析生成配置树、错误日志定位与读取 | R:code:backend/server.py | A:方法返回(ok,data)或(ok,message)不抛业务异常，由server.py统一转HTTP；prefix取confDir父目录；Windows进程检测走PowerShell CIM，超时8秒连续失败2次熔断降级tasklist；版本结果按exe路径+mtime缓存 | S:start必须用Popen分离启动，subprocess.run会因master常驻而超时并误杀进程树；stop/restart只用-s quit优雅退出，禁用-s stop；start/reload/restart前自动清理空或损坏的nginx.pid
+proxymgr.py[DB8L]: F:nginx.conf反向代理解析与修改：location+proxy_pass行级模型、代理增删改查、激活目标切换、目标地址池与等价写法去重、行尾别名管理 | R:code:backend/server.py | A:一个代理=一个含proxy_pass的location块；激活目标=块内唯一未注释proxy_pass行，备选=#proxy_pass注释行；池=全部proxy_pass目标并集，直接读写配置文件无独立存储，别名存行尾注释；修改是整文件文本替换，备份与nginx -t校验由server.py编排，失败restore()回滚 | S:行内注释仅当#前为空白或行首才截断，防止误伤proxy_pass URL中的#（如http://host/path#frag）；裸ip:port不是合法proxy_pass，仅历史备选可显示，切换后由nginx -t拦截并回滚
+server.py[EB9L]: F:后端HTTP服务入口：ThreadingHTTPServer路由全部/api端点，编排settings持久化、配置备份回滚、nginx控制、代理管理与前端静态资源服务 | R:code:backend/nginxctl.py,code:backend/proxymgr.py,code:API.md,code:build.py | A:仅监听127.0.0.1，端口优先级--port大于settings.port大于默认8310，被占用自动换随机端口；/api/status带15秒TTL缓存与串行锁，nginx启停重载后主动失效；request_queue_size=128、daemon_threads、静默连接中断，防前端轮询堆积导致服务假死；写操作统一校验X-Requested-With防本机CSRF；代理写变更统一走_proxy_apply：无变化跳过备份校验，有变化先备份提交再nginx -t校验失败回滚 | S:server_version字符串是版本号唯一来源，build.py正则提取它生成exe属性，改动格式会破坏打包；安全模型依赖仅绑定127.0.0.1且无CORS无鉴权，禁止改绑0.0.0.0对外暴露
+
+===/Users/lutao/code/nginx-manager/frontend/css/===
+style.css[FU4L]: F:全站样式：8套主题（4配色×日夜）的CSS变量体系与全部组件视觉（布局、顶栏、徽章、按钮、输入框、编辑器、备份、页签、代理管理、弹窗、Toast、向导、动画） | R:code:frontend/index.html,code:frontend/js/ui.js | A:主题经body的data-theme属性切换，颜色全部走CSS变量；系统字体回退栈零外部字体；玻璃拟态与动效令牌（--ease-spring等）含prefers-reduced-motion降级 | S:-
+
+===/Users/lutao/code/nginx-manager/frontend/===
+index.html[FU6M]: F:单页应用全部界面结构：顶栏与主题切换、首次配置向导、状态栏与启停控制按钮、配置文件树+编辑器+备份+错误日志视图、代理管理列表与地址池/添加代理/编辑备选/设置/确认等弹窗 | R:code:frontend/css/style.css,code:frontend/js/api.js,code:frontend/js/ui.js,code:frontend/js/app.js | A:脚本加载顺序固定api.js→ui.js→app.js；body建立后立即从localStorage恢复主题防闪烁；零外部资源引用，离线内网可用 | S:-
+
+===/Users/lutao/code/nginx-manager/frontend/js/===
+api.js[CN7S]: F:前端统一API请求封装：全部后端端点的业务方法、直连与nginx反代前缀自动探测、统一错误抛出与escapeHtml转义工具 | R:code:backend/server.py,code:API.md,code:frontend/js/app.js | A:detectBase按URL首段推断/nginx-manager代理前缀，直连8310时无前缀；_request统一携带X-Requested-With头（后端CSRF校验依赖此头）；非2xx抛出带status/detail/payload的Error；escapeHtml覆盖&<>"'供innerHTML插入前转义 | S:-
+app.js[AU8L]: F:前端主逻辑：向导与主界面切换、状态10秒轮询、配置树渲染与文件编辑保存回滚、备份列表与恢复删除、错误日志、代理增删切换与备选编辑、目标地址池、设置修改与服务重启的完整交互编排 | R:code:frontend/js/api.js,code:frontend/js/ui.js,code:frontend/index.html,code:frontend/css/style.css | A:未配置nginx时进入向导或预览模式，预览下拦截全部写操作并提示；保存配置后按409+saved:true特殊语义展示警告条并提供一键回滚（rollbackFile）；代理搜索150ms防抖过滤；waitForServer在服务重启后轮询等待新实例就绪 | S:-
+ui.js[CU5S]: F:DOM快捷工具与通用交互：$/$$选择器、debounce防抖、toast提示条、确认与多选项弹窗的Promise封装、弹窗开关与body滚动锁、主题切换器初始化 | R:code:frontend/index.html,code:frontend/js/app.js,code:frontend/css/style.css | A:主题选择持久化到localStorage(nm-theme)并设置body的data-theme属性；confirmChoice复用确认弹窗动态重建按钮；toast以textContent写入不构成XSS面 | S:-

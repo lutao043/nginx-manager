@@ -1,0 +1,217 @@
+{
+  "version": 1,
+  "created_at": "2026-09-15T08:29:16Z",
+  "updated_at": "2026-09-15T08:50:08Z",
+  "files": {
+    ".gitattributes": {
+      "sha256": "21fa16a2122e2b0360b47502c577428b645437e08e9e87ffba661f84853cb476",
+      "size": 291,
+      "normalized_sha256": "21fa16a2122e2b0360b47502c577428b645437e08e9e87ffba661f84853cb476"
+    },
+    ".gitea/workflows/build.yml": {
+      "sha256": "ee04e65d1affeda34c841fcb70949546d1c4bcb3504c6c88cc29fdfdc2e5189a",
+      "size": 1408,
+      "normalized_sha256": "ee04e65d1affeda34c841fcb70949546d1c4bcb3504c6c88cc29fdfdc2e5189a"
+    },
+    ".github/workflows/build.yml": {
+      "sha256": "cdc6f2958e6fd2e98a4f86d037a8b3bde5e370a31510d2fc748981052d8173a7",
+      "size": 1190,
+      "normalized_sha256": "cdc6f2958e6fd2e98a4f86d037a8b3bde5e370a31510d2fc748981052d8173a7"
+    },
+    ".gitignore": {
+      "sha256": "a8d9cab8dae31487536eaacbfac433ffe6c5a333a035776eddb611c571963f71",
+      "size": 310,
+      "normalized_sha256": "a8d9cab8dae31487536eaacbfac433ffe6c5a333a035776eddb611c571963f71"
+    },
+    ".workbuddy/memory/2026-08-04.md": {
+      "sha256": "a8db93b4304a46c37645e5b52e24cf10957ba55213fbbe667adc1e23cae89b8f",
+      "size": 10636,
+      "normalized_sha256": "a8db93b4304a46c37645e5b52e24cf10957ba55213fbbe667adc1e23cae89b8f"
+    },
+    ".workbuddy/memory/2026-08-05.md": {
+      "sha256": "f5c27d120049b14abe68ded392a0085fa53194579b28b35d4a4e915e18318d68",
+      "size": 6779,
+      "normalized_sha256": "f5c27d120049b14abe68ded392a0085fa53194579b28b35d4a4e915e18318d68"
+    },
+    ".workbuddy/memory/2026-08-25.md": {
+      "sha256": "5b82255280e8036426b2209bd33cb769ef65e150ed00f72001b828405e42cfa0",
+      "size": 11505,
+      "normalized_sha256": "5b82255280e8036426b2209bd33cb769ef65e150ed00f72001b828405e42cfa0"
+    },
+    ".workbuddy/memory/2026-09-04.md": {
+      "sha256": "6b36bc371c40396a5088e1dc22cb231fb376c6f0cb12863d9758fac1ba1bbf28",
+      "size": 3557,
+      "normalized_sha256": "6b36bc371c40396a5088e1dc22cb231fb376c6f0cb12863d9758fac1ba1bbf28"
+    },
+    ".zcode/config.json": {
+      "sha256": "ee9743ffbdf3c4dae8700dc4986e4b298cefe3a8efccf0870aaaad13c1560a67",
+      "size": 226,
+      "normalized_sha256": "ee9743ffbdf3c4dae8700dc4986e4b298cefe3a8efccf0870aaaad13c1560a67"
+    },
+    "AGENTS.md": {
+      "sha256": "ddb50101a5be7eb54bde0bdccb2ce15fbac13a0efed1b2851adc248c7a39bcb7",
+      "size": 13258,
+      "normalized_sha256": "ddb50101a5be7eb54bde0bdccb2ce15fbac13a0efed1b2851adc248c7a39bcb7"
+    },
+    "API.md": {
+      "sha256": "f10bf682b5f5ff264504d53f4dd987b268076bf60da8de6541857675bb7c4802",
+      "size": 24556,
+      "normalized_sha256": "f10bf682b5f5ff264504d53f4dd987b268076bf60da8de6541857675bb7c4802"
+    },
+    "README.en.md": {
+      "sha256": "10ba198e00014d243abc5021c45d1674630f5ffc4906134da100bb6405f3caa0",
+      "size": 4191,
+      "normalized_sha256": "10ba198e00014d243abc5021c45d1674630f5ffc4906134da100bb6405f3caa0"
+    },
+    "README.md": {
+      "sha256": "8ada94c894f02ecafa8f22d61f4dff446b8a1e018ecb3146184de681f7445429",
+      "size": 3756,
+      "normalized_sha256": "8ada94c894f02ecafa8f22d61f4dff446b8a1e018ecb3146184de681f7445429"
+    },
+    "SECURITY_AUDIT.md": {
+      "sha256": "fd29cb6572222ead123f886fa120b38dca6c6f75e17878cbe8f374fa29f02028",
+      "size": 4802,
+      "normalized_sha256": "fd29cb6572222ead123f886fa120b38dca6c6f75e17878cbe8f374fa29f02028"
+    },
+    "VIBE_CODING_GUIDE.md": {
+      "sha256": "2c6d7b229670983c4bb67c4e92291c18ea0bd39ea26b291fbbb58fc441336893",
+      "size": 4933,
+      "normalized_sha256": "2c6d7b229670983c4bb67c4e92291c18ea0bd39ea26b291fbbb58fc441336893"
+    },
+    "aoci.code.txt": {
+      "sha256": "c3dc3e415bf3574d5b32a788eae811607d3cf5fb036e8bca4598ed535205c0d8",
+      "size": 11054,
+      "normalized_sha256": "c3dc3e415bf3574d5b32a788eae811607d3cf5fb036e8bca4598ed535205c0d8"
+    },
+    "aoci.meta.txt": {
+      "role": "index",
+      "sha256": "60ffea0527ae0e1e2b5bf822c119cd3141118cdd33479dec063ee5f9c2114126",
+      "size": 1900,
+      "normalized_sha256": "60ffea0527ae0e1e2b5bf822c119cd3141118cdd33479dec063ee5f9c2114126"
+    },
+    "aoci.txt": {
+      "role": "index",
+      "sha256": "8ee8b536b46f6b34368fd84f96949c3e5e120487b8df735eceace377eb45c0e5",
+      "size": 302,
+      "normalized_sha256": "8ee8b536b46f6b34368fd84f96949c3e5e120487b8df735eceace377eb45c0e5"
+    },
+    "backend/nginxctl.py": {
+      "sha256": "065319ce826c215acf3229eee898edd3b9b12a0df25f3e18dc14d41c3f570108",
+      "size": 19309,
+      "normalized_sha256": "065319ce826c215acf3229eee898edd3b9b12a0df25f3e18dc14d41c3f570108"
+    },
+    "backend/proxymgr.py": {
+      "sha256": "5b4175c67f7b34aedb153c1aad9cece610f18159708c820d3d1ae65983b11e52",
+      "size": 20511,
+      "normalized_sha256": "5b4175c67f7b34aedb153c1aad9cece610f18159708c820d3d1ae65983b11e52"
+    },
+    "backend/server.py": {
+      "sha256": "6208375653ba6ebc3a998d8f64c605e9a845b4d275d60495807bfd3f917d900a",
+      "size": 58998,
+      "normalized_sha256": "6208375653ba6ebc3a998d8f64c605e9a845b4d275d60495807bfd3f917d900a"
+    },
+    "build.py": {
+      "sha256": "9ff9e7d881582444771f0160cb9d8c80b4c2e020ef7ddaa871a226ae3209a62a",
+      "size": 5459,
+      "normalized_sha256": "9ff9e7d881582444771f0160cb9d8c80b4c2e020ef7ddaa871a226ae3209a62a"
+    },
+    "frontend/css/style.css": {
+      "sha256": "6450c90f606c85bd8e106b9d08d81fa55ba65c88474c5ad0ee44b39e01f6056a",
+      "size": 31251,
+      "normalized_sha256": "6450c90f606c85bd8e106b9d08d81fa55ba65c88474c5ad0ee44b39e01f6056a"
+    },
+    "frontend/index.html": {
+      "sha256": "46fccca31288f79e83e0c362f0d99ea909a71414722f5c971b378bee491b2cb9",
+      "size": 16137,
+      "normalized_sha256": "46fccca31288f79e83e0c362f0d99ea909a71414722f5c971b378bee491b2cb9"
+    },
+    "frontend/js/api.js": {
+      "sha256": "80b37e49925927837a2ac672b2de097a930c765dd9005e9356d395e4d6fd707a",
+      "size": 4509,
+      "normalized_sha256": "80b37e49925927837a2ac672b2de097a930c765dd9005e9356d395e4d6fd707a"
+    },
+    "frontend/js/app.js": {
+      "sha256": "3fd92d50ad096dae83cc0ed4b53a20aeb0e45741ef408ba1dec6c3a4f1bcfdc1",
+      "size": 39066,
+      "normalized_sha256": "3fd92d50ad096dae83cc0ed4b53a20aeb0e45741ef408ba1dec6c3a4f1bcfdc1"
+    },
+    "frontend/js/ui.js": {
+      "sha256": "81f179d31eaccb59d5cf5a4e62765aa739dae1fce50c72d15cffea9f7a092b7f",
+      "size": 4495,
+      "normalized_sha256": "81f179d31eaccb59d5cf5a4e62765aa739dae1fce50c72d15cffea9f7a092b7f"
+    },
+    "nginx-manager.spec": {
+      "sha256": "d06a9f8ce665c6ac9a0e08bb5ef612c4f34dc4556a2465ef87d0fd473dcd418b",
+      "size": 2011,
+      "normalized_sha256": "d06a9f8ce665c6ac9a0e08bb5ef612c4f34dc4556a2465ef87d0fd473dcd418b"
+    }
+  },
+  "managed_scope": {
+    "version": "managed-scope-baseline/v1",
+    "policy_identity": "81421936ffa2228995783d12046110aa7b7759d131ce244b24bf0a69a61c9264",
+    "observe_change_policy": "review_required",
+    "budget_policy_identity": "15e9b37a6c57e9bf03c9df3d0d049eb5b9a7f5540f9d34960408114e2538a32d",
+    "budget_policy": {
+      "version": "cognition-budget-policy/v1",
+      "mode": "enforce",
+      "whole_index": {
+        "target_tokens": 200000,
+        "warning_tokens": 300000,
+        "max_tokens": 400000
+      },
+      "r": [
+        {
+          "min_c": 1,
+          "max_c": 4,
+          "target_tokens": 25,
+          "max_tokens": 50
+        },
+        {
+          "min_c": 5,
+          "max_c": 7,
+          "target_tokens": 45,
+          "max_tokens": 90
+        },
+        {
+          "min_c": 8,
+          "max_c": 8,
+          "target_tokens": 70,
+          "max_tokens": 140
+        },
+        {
+          "min_c": 9,
+          "max_c": 9,
+          "target_tokens": 90,
+          "max_tokens": 180
+        }
+      ],
+      "s": [
+        {
+          "min_c": 1,
+          "max_c": 4,
+          "target_tokens": 20,
+          "max_tokens": 40
+        },
+        {
+          "min_c": 5,
+          "max_c": 7,
+          "target_tokens": 40,
+          "max_tokens": 80
+        },
+        {
+          "min_c": 8,
+          "max_c": 8,
+          "target_tokens": 70,
+          "max_tokens": 140
+        },
+        {
+          "min_c": 9,
+          "max_c": 9,
+          "target_tokens": 100,
+          "max_tokens": 200
+        }
+      ]
+    },
+    "apply_authorization_mode": "auto"
+  }
+}
