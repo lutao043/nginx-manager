@@ -8,6 +8,7 @@ const App = (() => {
   let statusTimer = null;   // 状态轮询
   let editing = false;      // 编辑器是否有未保存改动
   let preview = false;      // 预览模式（未配置 nginx）
+  let configDirty = false;  // 有已写入配置文件但尚未重载生效的变更（前端近似跟踪）
 
   /* ---------- 初始化 ---------- */
   async function init() {
@@ -29,6 +30,34 @@ const App = (() => {
     setTimeout(() => document.body.classList.remove("first-load"), 700);
   }
 
+  /* ---------- 未重载变更跟踪 ----------
+     任一写操作成功后标记；重载/重启成功后清除。仅本页近似跟踪：
+     其他途径改动配置文件（外部手改）不感知。 */
+  function updateReloadHint() {
+    const show = configDirty && !preview;
+    $("#reloadHint").hidden = !show;
+    $("#btnQuickReload").hidden = !show;
+  }
+  function markConfigDirty() { configDirty = true; updateReloadHint(); }
+  function clearConfigDirty() { configDirty = false; updateReloadHint(); }
+
+  /* 状态栏一键重载：让已保存的修改立即生效 */
+  async function quickReload() {
+    if (inPreviewGuard("重载配置")) return;
+    const btn = $("#btnQuickReload");
+    btn.disabled = true;
+    try {
+      const res = await api.nginxAction("reload");
+      clearConfigDirty();
+      toast((res && res.message) || "nginx 配置已重载", "success");
+      refreshStatus();
+    } catch (e) {
+      toast(e.message, "error");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
   /* 预览模式拦截：未配置 nginx 时，写操作给出明确提示而非底层 409 */
   function inPreviewGuard(actionName) {
     if (!preview) return false;
@@ -45,6 +74,7 @@ const App = (() => {
   async function enterDashboard() {
     $("#wizard").hidden = true;
     $("#dashboard").hidden = false;
+    updateReloadHint();
     refreshStatus();
     await Promise.all([loadTree(), loadBackups(), loadErrorLog(), loadAccessLog()]);
     if (preview) {
@@ -88,11 +118,26 @@ const App = (() => {
     $("#btnReload").addEventListener("click", () => doNginxAction("reload", "重载 nginx 配置？"));
     $("#btnRestart").addEventListener("click", () => doNginxAction("restart", "重启 nginx 服务？"));
     $("#btnTest").addEventListener("click", runConfigTest);
+    // 一键重载（「配置已修改未重载」提示旁）
+    $("#btnQuickReload").addEventListener("click", quickReload);
+    // 底部停靠页签：备份 / 错误日志 / 访问日志
+    $("#dockTabBackups").addEventListener("click", () => switchDock("backups"));
+    $("#dockTabErrorLog").addEventListener("click", () => switchDock("errorlog"));
+    $("#dockTabAccessLog").addEventListener("click", () => switchDock("accesslog"));
     // 编辑器
     $("#btnSave").addEventListener("click", saveFile);
     $("#editor").addEventListener("input", () => {
       editing = true;
-      $("#editorMeta").textContent = "● 有未保存的修改";
+      updateCaret();
+    });
+    $("#editor").addEventListener("keyup", updateCaret);
+    $("#editor").addEventListener("click", updateCaret);
+    $("#editor").addEventListener("keydown", editorKeydown);
+    // 有未保存修改时拦截页面刷新/关闭，防误触丢失
+    window.addEventListener("beforeunload", (e) => {
+      if (!editing) return;
+      e.preventDefault();
+      e.returnValue = "";
     });
     // 备份/日志
     $("#btnRefreshBackups").addEventListener("click", loadBackups);
@@ -183,6 +228,20 @@ const App = (() => {
       loadProxies();
       loadUpstreams();
     }
+  }
+
+  /* ---------- 底部停靠页签（配置备份/错误日志/访问日志） ---------- */
+  const DOCK_MAP = {
+    backups:   { tab: "#dockTabBackups",    body: "#dockBackups" },
+    errorlog:  { tab: "#dockTabErrorLog",   body: "#dockErrorLog" },
+    accesslog: { tab: "#dockTabAccessLog",  body: "#dockAccessLog" },
+  };
+
+  function switchDock(name) {
+    Object.entries(DOCK_MAP).forEach(([key, ref]) => {
+      $(ref.tab).classList.toggle("active", key === name);
+      $(ref.body).hidden = key !== name;
+    });
   }
 
   /* ---------- 向导保存 ---------- */
@@ -355,6 +414,13 @@ const App = (() => {
       $("#stVersion").textContent = st.version || "—";
       $("#stPid").textContent = st.pid || "—";
       $("#stConf").textContent = st.confPath || (preview ? "（预览模式）" : "—");
+      // 启停按钮随运行状态可用/禁用；restart 内部是先退再启，停止时也可用（等同启动）
+      const running = !preview && !!st.running;
+      $("#btnStart").disabled = preview || running;
+      $("#btnStop").disabled = !running;
+      $("#btnReload").disabled = !running;
+      $("#btnRestart").disabled = preview;
+      $("#btnTest").disabled = preview;
       // 代理页顶部同步显示当前管理的配置文件完整路径
       const cp = $("#confPathText");
       if (cp) {
@@ -418,10 +484,14 @@ const App = (() => {
         if (reloadNow) {
           try {
             const r = await api.nginxAction("reload");
+            clearConfigDirty();
             toast((r && r.message) || "nginx 配置已重载", "success");
           } catch (e) {
+            markConfigDirty();
             toast(e.message, "error");
           }
+        } else {
+          markConfigDirty();
         }
       }
       refreshStatus();
@@ -486,6 +556,63 @@ const App = (() => {
     return wrap;
   }
 
+  /* ---------- 编辑器辅助：行列指示 / Tab 缩进 / Ctrl+S ---------- */
+
+  /* 状态栏左侧元信息：未保存标记 + 当前行列号 */
+  function updateCaret() {
+    const ed = $("#editor");
+    if ($("#editorPanel").hidden) return;
+    const upto = ed.value.slice(0, ed.selectionStart);
+    const lines = upto.split("\n");
+    const caret = "行 " + lines.length + "，列 " + (lines[lines.length - 1].length + 1);
+    $("#editorMeta").textContent = (editing ? "● 有未保存的修改 · " : "") + caret;
+  }
+
+  function editorKeydown(e) {
+    // Ctrl/Cmd+S 保存（走保存前 diff 预览流程）
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === "s" || e.key === "S")) {
+      e.preventDefault();
+      saveFile();
+      return;
+    }
+    // Tab 缩进 / Shift+Tab 反缩进（默认行为是跳出编辑器，编辑配置时很反人类）
+    if (e.key === "Tab") {
+      e.preventDefault();
+      editorIndent(e.shiftKey);
+    }
+  }
+
+  /* Tab 缩进：光标处插入 4 空格；多行选区整体缩进/反缩进（空行跳过） */
+  function editorIndent(outdent) {
+    const ed = $("#editor");
+    const unit = "    ";
+    const start = ed.selectionStart, end = ed.selectionEnd;
+    const value = ed.value;
+    if (start === end || !value.slice(start, end).includes("\n")) {
+      if (outdent) return;
+      ed.value = value.slice(0, start) + unit + value.slice(end);
+      ed.selectionStart = ed.selectionEnd = start + unit.length;
+      editing = true;
+      updateCaret();
+      return;
+    }
+    const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+    let lineEnd = value.indexOf("\n", end);
+    if (lineEnd === -1) lineEnd = value.length;
+    const block = value.slice(lineStart, lineEnd).split("\n");
+    const changed = block.map((line) => {
+      if (outdent) return line.replace(/^ {1,4}/, "");
+      return line ? unit + line : line;
+    });
+    const joined = changed.join("\n");
+    ed.value = value.slice(0, lineStart) + joined + value.slice(lineEnd);
+    // 重新选中缩进后的整块，便于连续操作
+    ed.selectionStart = lineStart;
+    ed.selectionEnd = lineStart + joined.length;
+    editing = true;
+    updateCaret();
+  }
+
   /* ---------- 文件编辑 ---------- */
   async function openFile(path) {
     if (editing) {
@@ -499,12 +626,13 @@ const App = (() => {
       const data = await api.readFile(path);
       originalContent = data.content;
       $("#editor").value = data.content;
+      $("#editor").scrollTop = 0; // 打开新文件回到顶部，避免残留上次滚动位置
       $("#editorTitle").textContent = data.path;
       $("#editorPanel").hidden = false;
       $("#emptyPanel").hidden = true;
-      $("#editorMeta").textContent = "";
-      $("#saveWarning").hidden = true;
       editing = false;
+      updateCaret();
+      $("#saveWarning").hidden = true;
     } catch (e) {
       toast(e.message, "error");
     }
@@ -541,7 +669,8 @@ const App = (() => {
       $("#saveWarning").hidden = true;
       editing = false;
       originalContent = content;
-      toast(res.backedUp ? "配置已保存并备份" : "配置已保存（未备份）", "success");
+      markConfigDirty(); // 已写入磁盘，重载后生效
+      toast(res.backedUp ? "配置已保存并备份，重载后生效" : "配置已保存（未备份），重载后生效", "success");
       loadBackups();
     } catch (e) {
       if (e.status === 409 && e.payload && e.payload.saved) {
@@ -556,6 +685,8 @@ const App = (() => {
         showTestResult(e.payload.test);
         editing = false;
         originalContent = content;
+        $("#editorMeta").textContent = "已保存（校验失败）"; // 内容已落盘，不再显示「未保存」
+        markConfigDirty();
         toast("配置已保存，但校验失败", "error");
       } else {
         toast(e.message, "error");
@@ -571,6 +702,7 @@ const App = (() => {
     if (!ok) return;
     try {
       await api.restoreBackup(backupId);
+      markConfigDirty();
       toast("已回滚，正在重新加载…", "success");
       await loadTree();
       if (currentFile) openFile(currentFile);
@@ -643,6 +775,8 @@ const App = (() => {
     try {
       const res = await api.nginxAction(action);
       toast(res.message || "操作成功", "success");
+      // 重载/重启成功意味着磁盘配置已全部生效
+      if (action === "reload" || action === "restart") clearConfigDirty();
       refreshStatus();
     } catch (e) {
       toast(e.message, "error");
@@ -653,6 +787,8 @@ const App = (() => {
   function renderBackups(items, retention) {
     const list = $("#backupList");
     const tip = $("#backupRetentionTip");
+    const cnt = $("#backupCount");
+    if (cnt) cnt.textContent = items.length ? "（" + items.length + "）" : "";
     if (tip) tip.textContent = retention > 0 ? `自动保留最近 ${retention} 份（可在设置中调整）` : "未启用自动清理（可在设置中调整）";
     if (!items.length) {
       list.innerHTML = '<p class="muted">暂无备份</p>';
@@ -721,6 +857,7 @@ const App = (() => {
     if (!ok) return;
     try {
       const res = await api.restoreBackup(backup.id);
+      markConfigDirty();
       toast("回滚成功", "success");
       showTestResult(res.test);
       await loadTree();
@@ -1127,8 +1264,15 @@ const App = (() => {
   async function doSwitchProxy(p, target) {
     if (!target || target === p.active) return;
     if (inPreviewGuard("切换代理")) return;
-    const ok = await confirmDialog("将代理 " + p.path + " 切换到 " + target + "？\n将自动备份并校验配置。");
-    if (!ok) return;
+    // 一次弹窗同时确认「切换」与「是否立即重载」，替代原先的连续两次确认
+    const choice = await confirmChoice(
+      "将代理 " + p.path + " 切换到 " + target + "？\n将自动备份并校验配置。",
+      [
+        { label: "切换并重载", value: "reload", primary: true },
+        { label: "仅切换", value: "switch" },
+      ]
+    );
+    if (!choice) return;
     try {
       const res = await api.switchProxy(p.path, target);
       showProxyTest(res.test);
@@ -1136,14 +1280,17 @@ const App = (() => {
       loadProxies();
       loadPool(); // 切换可能自动追加备选，配置文件已变化
       refreshStatus();
-      // 切换成功后询问是否立即重载配置
-      const reloadNow = await confirmDialog("配置已切换并校验通过。\n是否立即重载 nginx 配置？");
-      if (!reloadNow) return;
-      const reloadRes = await api.nginxAction("reload");
-      if (reloadRes && reloadRes.ok) {
-        toast("nginx 配置已重载", "success");
+      if (choice === "reload") {
+        try {
+          const reloadRes = await api.nginxAction("reload");
+          clearConfigDirty();
+          toast((reloadRes && reloadRes.message) || "nginx 配置已重载", "success");
+        } catch (e) {
+          markConfigDirty();
+          toast(e.message, "error");
+        }
       } else {
-        toast((reloadRes && reloadRes.message) || "重载失败", "error");
+        markConfigDirty(); // 仅切换未重载，提醒稍后生效
       }
       refreshStatus();
     } catch (e) {
@@ -1159,6 +1306,7 @@ const App = (() => {
     try {
       const res = await api.removeProxy(p.path);
       showProxyTest(res.test);
+      markConfigDirty();
       toast("已删除代理: " + p.path, "success");
       loadProxies();
       loadPool(); // 代理删除后其独有目标从池中消失
@@ -1193,7 +1341,8 @@ const App = (() => {
       closeModal("#addProxyModal");
       unlockBody();
       showProxyTest(res.test);
-      toast("已添加代理: " + path, "success");
+      markConfigDirty();
+      toast("已添加代理: " + path + "，重载后生效", "success");
       loadProxies();
       loadPool(); // 新代理的激活目标进入地址池
       refreshStatus();
@@ -1272,7 +1421,8 @@ const App = (() => {
       closeModal("#editTargetsModal");
       unlockBody();
       showProxyTest(res.test);
-      toast("已更新备选目标", "success");
+      markConfigDirty();
+      toast("已更新备选目标，重载后生效", "success");
       loadProxies();
       loadPool(); // 备选变化直接影响地址池
       refreshStatus();
@@ -1469,7 +1619,8 @@ const App = (() => {
       closeModal("#upstreamModal");
       unlockBody();
       showProxyTest(res.test);
-      toast("upstream 已保存", "success");
+      markConfigDirty();
+      toast("upstream 已保存，重载后生效", "success");
       loadUpstreams();
     } catch (e) {
       showUpstreamError(e.message);
@@ -1483,7 +1634,8 @@ const App = (() => {
     try {
       const res = await api.removeUpstream(u.name);
       showProxyTest(res.test);
-      toast("已删除 upstream: " + u.name, "success");
+      markConfigDirty();
+      toast("已删除 upstream: " + u.name + "，重载后生效", "success");
       loadUpstreams();
     } catch (e) {
       toast(e.message, "error");

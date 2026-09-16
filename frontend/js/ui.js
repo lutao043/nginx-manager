@@ -24,7 +24,7 @@ function toast(msg, type) {
   toastTimer = setTimeout(() => { el.hidden = true; }, 3200);
 }
 
-/* 确认弹窗：返回 Promise<boolean> */
+/* 确认弹窗：返回 Promise<boolean>（Esc/取消/点遮罩均视为否） */
 function confirmDialog(text) {
   return new Promise((resolve) => {
     const mask = $("#confirmModal");
@@ -32,26 +32,30 @@ function confirmDialog(text) {
     const noBtn = $("#btnConfirmNo");
     $("#confirmText").textContent = text;
     mask.hidden = false;
+    yesBtn.focus(); // 回车直接确认
 
     const done = (val) => {
       mask.hidden = true;
       yesBtn.removeEventListener("click", onYes);
       noBtn.removeEventListener("click", onNo);
       mask.removeEventListener("click", onMask);
+      document.removeEventListener("keydown", onKey);
       resolve(val);
     };
     const onYes = () => done(true);
     const onNo = () => done(false);
     const onMask = (e) => { if (e.target === mask) done(false); };
+    const onKey = (e) => { if (e.key === "Escape") done(false); };
 
     yesBtn.addEventListener("click", onYes);
     noBtn.addEventListener("click", onNo);
     mask.addEventListener("click", onMask);
+    document.addEventListener("keydown", onKey);
   });
 }
 
 /* 多选项确认弹窗：options = [{label, value, primary?}]，返回 Promise<value|null>
-   点遮罩/取消返回 null。用同一 confirmModal，动态重建按钮。 */
+   点遮罩/取消/Esc 返回 null。用同一 confirmModal，动态重建按钮。 */
 function confirmChoice(text, options) {
   return new Promise((resolve) => {
     const mask = $("#confirmModal");
@@ -82,9 +86,11 @@ function confirmChoice(text, options) {
       foot.appendChild(no);
       foot.appendChild(yes);
       mask.removeEventListener("click", onMask);
+      document.removeEventListener("keydown", onKey);
       resolve(val);
     };
     const onMask = (e) => { if (e.target === mask) done(null); };
+    const onKey = (e) => { if (e.key === "Escape") done(null); };
     cancelBtn.addEventListener("click", () => done(null));
     options.forEach((opt) => {
       const btn = document.createElement("button");
@@ -95,31 +101,50 @@ function confirmChoice(text, options) {
       foot.appendChild(btn);
     });
     mask.addEventListener("click", onMask);
+    document.addEventListener("keydown", onKey);
     mask.hidden = false;  // 显示弹窗
+    const primary = foot.querySelector(".btn-primary");
+    if (primary) primary.focus(); // 回车直接选主选项
   });
 }
 
-/* 打开设置弹窗 */
+/* 打开/关闭弹窗：维护打开栈，Esc 关闭最上层 */
+let modalStack = [];
+
 function openModal(id) {
   const mask = $(id);
-  if (mask) mask.hidden = false;
+  if (!mask) return;
+  if (!modalStack.includes(id)) modalStack.push(id);
+  mask.hidden = false;
 }
 
 function closeModal(id) {
   const mask = $(id);
   if (mask) mask.hidden = true;
+  modalStack = modalStack.filter((x) => x !== id);
 }
 
-/* 按键锁定（弹窗打开时锁 body 滚动） */
-let bodyLocked = false;
+/* Esc 关闭最上层弹窗（确认弹窗有自己的 Esc 处理，此处跳过） */
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || !modalStack.length) return;
+  const confirmMask = $("#confirmModal");
+  if (confirmMask && !confirmMask.hidden) return;
+  const top = $(modalStack[modalStack.length - 1]);
+  if (!top) return;
+  const closer = top.querySelector("[data-close]");
+  if (closer) closer.click(); // 走统一关闭流程（含 onClose 回调）
+  else { top.hidden = true; modalStack.pop(); }
+});
+
+/* 按键锁定（弹窗打开时锁 body 滚动，计数支持嵌套弹窗） */
+let bodyLockCount = 0;
 function lockBody() {
-  if (bodyLocked) return;
-  bodyLocked = true;
+  bodyLockCount++;
   document.body.style.overflow = "hidden";
 }
 function unlockBody() {
-  bodyLocked = false;
-  document.body.style.overflow = "";
+  bodyLockCount = Math.max(0, bodyLockCount - 1);
+  if (!bodyLockCount) document.body.style.overflow = "";
 }
 
 function bindModalClose(id, onClose) {
