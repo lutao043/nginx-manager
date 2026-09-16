@@ -2,11 +2,12 @@
 """nginxctl.py — nginx 跨平台控制模块（Windows / macOS / Linux）
 
 职责：
-  - nginx -t 语法校验
+  - nginx -t 语法校验（含错误文件/行号解析）
   - start / stop / reload / restart 进程控制
   - 运行状态检测（进程 + 版本 + pid）
   - 配置文件 include 解析（生成配置树）
-  - 错误日志定位与读取
+  - 错误日志定位与读取、访问日志候选定位与尾部读取
+  - stub_status 检测 / listen 端口解析 / 实时连接指标抓取
 
 设计约定：
   - 所有命令通过 subprocess 执行，参数一律用列表传递，不经过 shell（防注入）。
@@ -17,6 +18,7 @@
 """
 from __future__ import annotations
 
+import collections
 import glob
 import os
 import re
@@ -24,6 +26,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.request
 from typing import List, Optional, Tuple
 
 WIN = sys.platform.startswith("win")
@@ -77,13 +80,25 @@ class NginxController:
     # ---------- 配置校验 ----------
 
     def test_config(self) -> Tuple[bool, dict]:
-        """nginx -t 校验。返回 (ok, {ok, output})。"""
+        """nginx -t 校验。返回 (ok, {ok, output, errFile?, errLine?})。
+        校验失败时从输出解析出错文件与行号（如 `... in /path/nginx.conf:12`），
+        供前端定位编辑器行；解析失败时缺省这两个字段。"""
         if not os.path.isfile(self.nginx_path):
             return False, {"ok": False, "output": f"nginx 可执行文件不存在: {self.nginx_path}"}
         code, _out, err = _run(self._test_cmd())
         output = (err or _out).strip()
         ok = code == 0 and "successful" in output
-        return code == 0, {"ok": ok, "output": output}
+        result = {"ok": ok, "output": output}
+        if code != 0:
+            # Windows 盘符路径含 ':'，用非贪婪匹配 + 行尾 :数字 锚定到最后一个 行号
+            m = re.search(r"in\s+(.+?):(\d+)\s*$", output)
+            if m:
+                result["errFile"] = m.group(1)
+                try:
+                    result["errLine"] = int(m.group(2))
+                except ValueError:
+                    pass
+        return code == 0, result
 
     # ---------- 版本 / 进程 ----------
 
@@ -441,6 +456,148 @@ class NginxController:
             return log_path, "".join(all_lines[-max(1, min(lines, 5000)):])
         except OSError:
             return log_path, ""
+
+    # ---------- 访问日志 ----------
+
+    _ACCESS_LOG_RE = re.compile(r"^\s*access_log\s+([^;]+);")
+
+    @staticmethod
+    def _strip_config_comment(line: str) -> str:
+        """去掉行内注释（'#' 前为空白或行首时才视为注释起点）。"""
+        out = []
+        for i, ch in enumerate(line):
+            if ch == "#" and (i == 0 or line[i - 1] in " \t"):
+                break
+            out.append(ch)
+        return "".join(out)
+
+    def find_access_log_paths(self) -> List[str]:
+        """候选访问日志路径：配置 access_log 指令解析（相对 prefix）+ 默认兜底路径，去重。
+        跳过 off / syslog: / memory: 等非文件目标。返回的路径可能尚不存在（文件轮转前）。"""
+        paths: List[str] = []
+
+        def _push(p: str) -> None:
+            p = os.path.normpath(os.path.abspath(p))
+            if p not in paths:
+                paths.append(p)
+
+        for fp in self.collect_included_files():
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+            except OSError:
+                continue
+            for line in content.split("\n"):
+                m = self._ACCESS_LOG_RE.match(self._strip_config_comment(line))
+                if not m:
+                    continue
+                first = m.group(1).strip().split()[0].strip("'\"") if m.group(1).strip() else ""
+                if not first or first == "off" or first.startswith(("syslog:", "memory:")):
+                    continue
+                _push(first if os.path.isabs(first) else os.path.join(self.prefix, first))
+        for d in (
+            os.path.join(self.prefix, "logs", "access.log"),
+            os.path.join(self.conf_dir, "logs", "access.log"),
+            os.path.join(self.conf_dir, "access.log"),
+        ):
+            _push(d)
+        return paths
+
+    def read_log_file(self, path: str, lines: int = 500) -> str:
+        """读取日志文件尾部（deque 有界读取，避免大文件整体载入内存）。
+        文件不存在/不可读时返回空字符串。"""
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                tail = collections.deque(f, maxlen=max(1, min(lines, 5000)))
+            return "".join(tail)
+        except OSError:
+            return ""
+
+    # ---------- stub_status 实时指标 ----------
+
+    _STUB_RE = re.compile(r"^\s*stub_status\s*;")
+    _LISTEN_RE = re.compile(r"^\s*listen\s+([^;]+);")
+
+    @staticmethod
+    def _location_path_of(expr: str) -> str:
+        """location 表达式取路径部分（跳过 = ~ ~* ^~ 修饰符），与 proxymgr 解析口径一致。"""
+        parts = expr.strip().split()
+        if parts and parts[0] in ("=", "~", "~*", "^~"):
+            return parts[1] if len(parts) > 1 else ""
+        return parts[0] if parts else ""
+
+    def find_stub_status(self) -> Optional[dict]:
+        """在主配置与 include 文件中查找 stub_status 指令。
+        返回 {path, file}（path 为所在 location 的路径）或 None。
+        采用「同一文件内向上最近一个 location 行」的启发式定位，嵌套 location 场景极少，可接受。"""
+        for fp in self.collect_included_files():
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                    lines = f.read().split("\n")
+            except OSError:
+                continue
+            current_loc: Optional[str] = None
+            for line in lines:
+                stripped = self._strip_config_comment(line)
+                lm = re.match(r"^\s*location\s+(.+?)\s*\{", stripped)
+                if lm:
+                    current_loc = self._location_path_of(lm.group(1))
+                    continue
+                if self._STUB_RE.match(stripped) and current_loc:
+                    return {"path": current_loc, "file": fp}
+        return None
+
+    def detect_listen_port(self) -> Optional[int]:
+        """从配置解析第一个 listen 端口（本机抓取 stub_status 用）。
+        支持 `listen 80;` / `listen 127.0.0.1:8080;` / `listen [::]:80;`；
+        unix: 监听与纯地址无端口形式跳过。找不到返回 None（调用方兜底 80）。"""
+        for fp in self.collect_included_files():
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                    lines = f.read().split("\n")
+            except OSError:
+                continue
+            for line in lines:
+                m = self._LISTEN_RE.match(self._strip_config_comment(line))
+                if not m:
+                    continue
+                token = m.group(1).strip().split()[0]
+                if token.startswith("unix:"):
+                    continue
+                if token.startswith("["):  # [::]:80
+                    rest = token[token.find("]") + 1:] if "]" in token else ""
+                    port = rest.lstrip(":")
+                    if port.isdigit():
+                        return int(port)
+                    continue
+                if ":" in token:
+                    token = token.rsplit(":", 1)[1]
+                if token.isdigit():
+                    return int(token)
+        return None
+
+    def fetch_stub_status(self, port: int, path: str, timeout: float = 2.0) -> Tuple[Optional[dict], Optional[str]]:
+        """请求本机 stub_status 页面并解析标准输出格式。
+        返回 (metrics, None) 或 (None, 失败原因)。"""
+        url = f"http://127.0.0.1:{port}{path}"
+        try:
+            req = urllib.request.Request(url, headers={"Connection": "close"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                text = resp.read(65536).decode("utf-8", "replace")
+        except Exception as e:
+            return None, f"无法访问 {url}: {e}"
+        metrics = {}
+        m = re.search(r"Active connections:\s*(\d+)", text)
+        if not m:
+            return None, f"{url} 响应不是 stub_status 格式"
+        metrics["active"] = int(m.group(1))
+        m = re.search(r"^\s*(\d+)\s+(\d+)\s+(\d+)\s*$", text, re.MULTILINE)
+        if m:
+            metrics["accepts"], metrics["handled"], metrics["requests"] = (int(x) for x in m.groups())
+        m = re.search(r"Reading:\s*(\d+)\s+Writing:\s*(\d+)\s+Waiting:\s*(\d+)", text)
+        if m:
+            metrics["reading"], metrics["writing"], metrics["waiting"] = (int(x) for x in m.groups())
+        return metrics, None
 
 
 # ---------- 便捷工厂 ----------

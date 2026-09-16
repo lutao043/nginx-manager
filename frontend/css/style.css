@@ -527,3 +527,63 @@ body.first-load .backup-item{animation:slideUp var(--dur) var(--ease-out) both}
   .proxy-item-actions{margin-left:0;width:100%}
   .topbar{padding:0 16px}
 }
+
+/* ═══════════════════════════════════════════
+   3. 场景模板 / upstream / 访问日志 / diff
+   ═══════════════════════════════════════════ */
+
+/* 场景模板 / 调度算法小标签 */
+.tag-template{
+  display:inline-flex;align-items:center;
+  padding:3px 10px;border-radius:var(--r-full);
+  font-size:11px;font-weight:600;font-family:var(--mono);
+  color:var(--accent);background:var(--accent-d);border:1px solid var(--accent-g);
+  white-space:nowrap;
+}
+.upstream-meta{display:inline-flex;align-items:center;gap:6px}
+
+/* upstream 服务器列表 */
+.upstream-servers{
+  margin:4px 0 12px;display:flex;flex-direction:column;gap:6px;
+  font-size:12px;color:var(--text-2);
+}
+.upstream-servers .srv{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* upstream 编辑弹窗行（复用 targets-edit-row 布局） */
+.upstream-server-row input[type="number"].up-weight{
+  width:76px;flex:none;height:34px;padding:0 8px;
+  background:var(--bg-input);border:1px solid var(--border);border-radius:var(--r-xs);
+  color:var(--text-1);font-family:var(--mono);font-size:12px;
+}
+.upstream-server-row input[type="number"].up-weight:focus{outline:none;border-color:var(--accent)}
+.up-check{
+  display:inline-flex;align-items:center;gap:5px;flex:none;
+  font-size:12px;color:var(--text-2);cursor:pointer;user-select:none;white-space:nowrap;
+}
+.up-check input[type="checkbox"]{accent-color:var(--accent);width:15px;height:15px;cursor:pointer}
+
+/* 访问日志路径切换 */
+.log-path-select{height:30px;padding:0 26px 0 10px;font-size:12px;background-position:right 8px center}
+
+/* diff 视图（保存预览 / 备份对比共用） */
+.diff-view{
+  background:var(--bg-input);border:1px solid var(--border);border-radius:var(--r-md);
+  padding:14px;font-family:var(--mono);font-size:12px;line-height:1.6;
+  max-height:52vh;overflow:auto;white-space:pre;
+}
+.diff-view span{display:block}
+.diff-view .dl-add{color:var(--ok);background:var(--ok-d)}
+.diff-view .dl-del{color:var(--danger);background:var(--danger-d)}
+.diff-view .dl-hunk{color:var(--info);opacity:.85}
+.diff-view .dl-ctx{color:var(--text-2)}
+.diff-select-row{display:flex;align-items:center;gap:8px;margin-bottom:14px}
+.diff-select-row select{flex:1;min-width:0;height:36px;font-size:12px}
+.diff-select-row .diff-arrow{color:var(--text-3);flex:none}
+
+.modal-lg{width:760px}
+
+@media(max-width:760px){
+  .diff-select-row{flex-wrap:wrap}
+  .diff-select-row select{flex-basis:100%}
+  .modal-lg{width:100%}
+}

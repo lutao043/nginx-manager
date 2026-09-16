@@ -8,6 +8,11 @@
   - 目标地址池 = 全部代理 proxy_pass 目标的并集（含注释备选），直接读写配置文件：
     池条目别名存于 proxy_pass 行尾注释（`proxy_pass http://a; # 别名`）。
   - 只识别包含 proxy_pass 的 location 块；静态资源 location 不进入代理列表。
+  - 场景模板只影响新建块：standard（默认三行头）/ websocket / sse / upload；
+    列表展示时按块内特征指令反向嗅探模板类型。
+  - upstream 管理：解析/重写 nginx.conf `http{}` 内的 `upstream <name> { }` 块，
+    保存按规范形式整块重写（地址 → weight → backup → down → 其余参数原样保留）。
+  - stub_status 一键开启：向最后一个 server 块写入受管理的只读本机 location 块。
 
 修改一律"整文件文本替换 + nginx -t 校验"，失败恢复原文（调用方负责备份/校验编排）。
 """
@@ -20,6 +25,8 @@ from typing import List, Optional
 # 行尾别名注释：`proxy_pass http://a; # 别名`（'#' 前须有空白，避免误伤 URL 中的 '#'）
 PROXY_PASS_RE = re.compile(r"^(\s*)(#\s*)?proxy_pass\s+(.+?);\s*(?:#\s*(.*?))?\s*$")
 LOCATION_RE = re.compile(r"^(\s*)location\s+(.+?)\s*\{")
+UPSTREAM_RE = re.compile(r"^(\s*)upstream\s+([A-Za-z0-9_\-]+)\s*\{")
+HTTP_RE = re.compile(r"^(\s*)http\s*\{")
 
 
 class ProxyBlock:
@@ -111,6 +118,96 @@ def parse_proxies(content: str) -> List[ProxyBlock]:
             blocks.append(block)
         i = end + 1
     return blocks
+
+
+# ---------- upstream 解析 ----------
+
+def parse_upstreams(content: str) -> List[dict]:
+    """解析配置文本中全部 upstream 块（按出现顺序）。
+    返回 [{name, indent, start, end, method, servers}]，servers 为
+    [{address, params}]（params 为原始参数词列表，解析交给 _server_info）。"""
+    lines = content.split("\n")
+    blocks: List[dict] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.lstrip().startswith("#"):
+            i += 1
+            continue
+        m = UPSTREAM_RE.match(line)
+        if not m:
+            i += 1
+            continue
+        end = _count_braces(lines, i)
+        block = {"name": m.group(2), "indent": m.group(1) or "", "start": i, "end": end,
+                 "method": "round_robin", "servers": []}
+        for j in range(i + 1, end):
+            s = _strip_inline_comment(lines[j]).strip()
+            if not s or s.startswith("#"):
+                continue
+            if s in ("least_conn;", "ip_hash;"):
+                block["method"] = s[:-1]
+                continue
+            sm = re.match(r"^server\s+(.+?);\s*$", s)
+            if sm:
+                parts = sm.group(1).split()
+                if parts:
+                    block["servers"].append({"address": parts[0], "params": parts[1:]})
+        blocks.append(block)
+        i = end + 1
+    return blocks
+
+
+def _server_info(srv: dict) -> dict:
+    """把 server 行参数词拆解为结构化信息（weight/backup/down + 其余原样保留）。"""
+    info = {"weight": 1, "backup": False, "down": False, "extra": []}
+    for p in srv.get("params", []):
+        if p.startswith("weight="):
+            try:
+                info["weight"] = int(p.split("=", 1)[1])
+            except ValueError:
+                info["extra"].append(p)
+        elif p == "backup":
+            info["backup"] = True
+        elif p == "down":
+            info["down"] = True
+        else:
+            info["extra"].append(p)
+    return info
+
+
+def _render_upstream_block(indent: str, name: str, method: str, servers: List[dict]) -> str:
+    """按规范形式渲染 upstream 块：地址 → weight（≠1 才写）→ backup → down → 其余参数。"""
+    inner = indent + " " * 4
+    lines = [f"{indent}upstream {name} {{"]
+    if method and method != "round_robin":
+        lines.append(f"{inner}{method};")
+    for s in servers:
+        bits = [f"server {s['address']}"]
+        if s["weight"] != 1:
+            bits.append(f"weight={s['weight']}")
+        if s["backup"]:
+            bits.append("backup")
+        if s["down"]:
+            bits.append("down")
+        bits.extend(s.get("extra", []))
+        lines.append(f"{inner}" + " ".join(bits) + ";")
+    lines.append(f"{indent}}}")
+    return "\n".join(lines)
+
+
+def _find_http_block(lines: List[str]) -> Optional[tuple]:
+    """找第一个顶层 http 块，返回 (start, end, indent)；不存在返回 None。"""
+    i = 0
+    while i < len(lines):
+        if lines[i].lstrip().startswith("#"):
+            i += 1
+            continue
+        m = HTTP_RE.match(lines[i])
+        if m:
+            return i, _count_braces(lines, i), m.group(1) or ""
+        i += 1
+    return None
 
 
 # ---------- 修改操作 ----------
@@ -258,15 +355,84 @@ def _find_insert_point(lines: List[str]) -> Optional[int]:
     return _count_braces(lines, last_start)
 
 
-def _proxy_template(path: str, target: str) -> str:
-    return (
+# 场景模板：追加在标准三行 proxy_set_header 之后的附加指令（与 API.md 契约一致）
+PROXY_TEMPLATES = {
+    "standard": [],
+    "websocket": [
+        "proxy_http_version 1.1;",
+        "proxy_set_header Upgrade $http_upgrade;",
+        'proxy_set_header Connection "upgrade";',
+        "proxy_read_timeout 300s;",
+    ],
+    "sse": [
+        "proxy_buffering off;",
+        "proxy_cache off;",
+        "proxy_set_header X-Accel-Buffering no;",
+        "proxy_read_timeout 3600s;",
+    ],
+    "upload": [
+        "client_max_body_size 1024m;",
+        "proxy_request_buffering off;",
+        "proxy_read_timeout 300s;",
+        "proxy_send_timeout 300s;",
+    ],
+}
+
+# upstream 名称：proxy_pass http://<name> 直接引用，须为合法标识
+_UPSTREAM_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_\-]*$")
+# upstream server 地址：host:port / IP / [ipv6]:port / unix:/path，拒绝空白与结构性字符
+_SERVER_ADDR_RE = re.compile(r"^(?:unix:/[^\s;{}#]+|[A-Za-z0-9_.\-]+(?::\d{1,5})?|\[[0-9a-fA-F:]+\](?::\d{1,5})?)$")
+_EXTRA_PARAM_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_=\.\-/]*$")
+
+
+def _normalize_upstream_name(name: str) -> Optional[str]:
+    n = (name or "").strip()
+    return n if _UPSTREAM_NAME_RE.fullmatch(n) else None
+
+
+def _normalize_server_address(addr: str) -> Optional[str]:
+    a = (addr or "").strip()
+    return a if _SERVER_ADDR_RE.fullmatch(a) else None
+
+
+def _normalize_upstream_servers(raw) -> Optional[List[dict]]:
+    """校验前端提交的 servers 列表；非法返回 None（含地址重复/weight 越界/参数词非法）。"""
+    if not isinstance(raw, list) or not raw:
+        return None
+    out: List[dict] = []
+    seen = set()
+    for s in raw:
+        if not isinstance(s, dict):
+            return None
+        addr = _normalize_server_address(str(s.get("address", "")))
+        if not addr or addr in seen:
+            return None
+        seen.add(addr)
+        try:
+            w = int(s.get("weight", 1) or 1)
+        except (TypeError, ValueError):
+            return None
+        if not 1 <= w <= 100:
+            return None
+        extra = [str(x) for x in (s.get("extra") or []) if _EXTRA_PARAM_RE.fullmatch(str(x))]
+        out.append({"address": addr, "weight": w, "backup": bool(s.get("backup")),
+                    "down": bool(s.get("down")), "extra": extra})
+    return out
+
+
+def _proxy_template(path: str, target: str, template: str = "standard") -> str:
+    extra_lines = PROXY_TEMPLATES.get(template) or []
+    text = (
         f"        location {path} {{\n"
         f"            proxy_pass {target};\n"
         f"            proxy_set_header Host $host;\n"
         f"            proxy_set_header X-Real-IP $remote_addr;\n"
         f"            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
-        f"        }}\n"
     )
+    for ln in extra_lines:
+        text += f"            {ln}\n"
+    text += "        }\n"
+    return text
 
 
 class ProxyManager:
@@ -295,6 +461,7 @@ class ProxyManager:
 
     def list_proxies(self) -> List[dict]:
         self.reload()
+        lines = self.content.split("\n")
         out = []
         for b in self.blocks:
             # 无激活 proxy_pass 的块（如 alias 静态目录）不是代理，跳过
@@ -305,21 +472,36 @@ class ProxyManager:
                 "active": b.active,
                 "targets": b.targets,
                 "proxyHeaders": self._has_headers(b),
+                "template": self._detect_template(b, lines),
             })
         return out
 
     def _has_headers(self, block: ProxyBlock) -> bool:
+        lines = self.content.split("\n")
         for j in range(block.start, block.end + 1):
-            line = self.content.split("\n")[j]
-            if "proxy_set_header" in line:
+            if "proxy_set_header" in lines[j]:
                 return True
         return False
 
+    @staticmethod
+    def _detect_template(block: ProxyBlock, lines: List[str]) -> str:
+        """按块内特征指令嗅探模板类型（仅用于列表展示，与 PROXY_TEMPLATES 键对应）。"""
+        joined = "\n".join(_strip_inline_comment(lines[j]) for j in range(block.start, block.end + 1))
+        if re.search(r"proxy_set_header\s+Upgrade\s", joined):
+            return "websocket"
+        if re.search(r"proxy_buffering\s+off", joined):
+            return "sse"
+        if re.search(r"client_max_body_size", joined):
+            return "upload"
+        return "standard"
+
     # ---- 操作：调用方负责备份与 nginx -t 编排，失败时调用 restore() ----
 
-    def add(self, path: str, target: str) -> dict:
+    def add(self, path: str, target: str, template: str = "standard") -> dict:
         path = _normalize_path(path)
         target = _normalize_target(target)
+        if template not in PROXY_TEMPLATES:
+            return {"ok": False, "error": f"模板不支持: {template}"}
         if not path or not target:
             return {"ok": False, "error": "path 或 target 非法"}
         lines = self.content.split("\n")
@@ -330,11 +512,12 @@ class ProxyManager:
         insert_at = _find_insert_point(lines)
         if insert_at is None:
             return {"ok": False, "error": "未找到 server 块，无法添加代理"}
-        block = _proxy_template(path, target).rstrip("\n")
+        block = _proxy_template(path, target, template).rstrip("\n")
         lines.insert(insert_at, block)
         self.content = "\n".join(lines)
         self._refresh()
-        return {"ok": True, "proxy": {"path": path, "active": target, "targets": [target], "proxyHeaders": True}}
+        return {"ok": True, "proxy": {"path": path, "active": target, "targets": [target],
+                                      "proxyHeaders": True, "template": template}}
 
     def switch(self, path: str, target: str) -> dict:
         """切换激活目标。target 必须已是该代理备选列表中的值（含历史遗留的
@@ -498,3 +681,90 @@ class ProxyManager:
         """写回磁盘。"""
         self._write(self.content)
         self.reload()
+
+    # ---- 负载均衡 upstream（与配置文件合一：直接读写 nginx.conf http{} 内的 upstream 块）----
+
+    def upstream_list(self) -> List[dict]:
+        self._refresh()
+        ups = parse_upstreams(self.content)
+        # 引用统计：代理目标（激活+备选）中 http://<name> 的 location 路径
+        used: dict = {}
+        for b in self.blocks:
+            for idx in b.pp_lines:
+                m = re.match(r"^https?://([^/?#]+)", b.pp_values[idx], re.IGNORECASE)
+                if m:
+                    used.setdefault(m.group(1).lower(), set()).add(b.path)
+        return [{
+            "name": u["name"],
+            "method": u["method"],
+            "servers": [{**_server_info(s), "address": s["address"]} for s in u["servers"]],
+            "usedBy": sorted(used.get(u["name"].lower(), set())),
+        } for u in ups]
+
+    def upstream_save(self, name: str, method: str, servers) -> dict:
+        """新建或整块重写 upstream。返回 {ok, error?}；内容改动落在 self.content，由调用方 commit。"""
+        name = _normalize_upstream_name(name)
+        if not name:
+            return {"ok": False, "error": "upstream 名称非法（字母/数字/下划线/连字符，且不以数字开头）"}
+        if method not in ("round_robin", "least_conn", "ip_hash"):
+            return {"ok": False, "error": f"调度算法不支持: {method}"}
+        norm = _normalize_upstream_servers(servers)
+        if norm is None:
+            return {"ok": False, "error": "服务器列表非法（至少 1 条，地址合法且不重复，weight 为 1~100 整数）"}
+        lines = self.content.split("\n")
+        existing = next((u for u in parse_upstreams(self.content) if u["name"] == name), None)
+        indent = existing["indent"] if existing else "    "
+        text = _render_upstream_block(indent, name, method, norm)
+        if existing:
+            lines[existing["start"]:existing["end"] + 1] = text.split("\n")
+        else:
+            http = _find_http_block(lines)
+            if http is None:
+                return {"ok": False, "error": "未找到 http 块，无法写入 upstream"}
+            lines.insert(http[1], text)
+        self.content = "\n".join(lines)
+        return {"ok": True}
+
+    def upstream_remove(self, name: str) -> dict:
+        name = (name or "").strip()
+        self._refresh()
+        # 引用检查：任何代理的激活/备选目标指向该 upstream 时拒绝删除
+        for b in self.blocks:
+            for idx in b.pp_lines:
+                m = re.match(r"^https?://([^/?#]+)", b.pp_values[idx], re.IGNORECASE)
+                if m and m.group(1).lower() == name.lower():
+                    return {"ok": False, "error": f"upstream 正在被代理 {b.path} 引用，请先切换或删除该代理"}
+        u = next((x for x in parse_upstreams(self.content) if x["name"] == name), None)
+        if u is None:
+            return {"ok": False, "error": f"upstream 不存在: {name}"}
+        lines = self.content.split("\n")
+        del lines[u["start"]:u["end"] + 1]
+        self.content = "\n".join(lines)
+        return {"ok": True}
+
+    # ---- stub_status 一键开启 ----
+
+    def enable_stub_status(self, path: str = "/nginx_status") -> dict:
+        """向最后一个 server 块写入受管理的 stub_status location（仅允许本机访问）。
+        已存在同名 location 时不重复写入（ok + unchanged）。"""
+        path = _normalize_path(path)
+        if not path:
+            return {"ok": False, "error": "路径非法"}
+        lines = self.content.split("\n")
+        for line in lines:
+            m = LOCATION_RE.match(line)
+            if m and m.group(2).split()[-1] == path:
+                return {"ok": True, "unchanged": True}
+        insert_at = _find_insert_point(lines)
+        if insert_at is None:
+            return {"ok": False, "error": "未找到 server 块，无法开启状态页"}
+        block = (
+            f"        location {path} {{\n"
+            f"            stub_status;\n"
+            f"            allow 127.0.0.1;\n"
+            f"            deny all;\n"
+            f"        }}"
+        )
+        lines.insert(insert_at, block)
+        self.content = "\n".join(lines)
+        return {"ok": True}

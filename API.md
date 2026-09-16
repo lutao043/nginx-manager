@@ -177,6 +177,14 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 { "ok": true, "output": "nginx: configuration file ... test is successful" }
 ```
 
+**失败响应 200**（校验本身执行成功但配置有错，`ok=false`）
+
+```json
+{ "ok": false, "output": "nginx: [emerg] unknown directive \"xxx\" in /path/nginx.conf:12", "errFile": "/path/nginx.conf", "errLine": 12 }
+```
+
+- `errFile` / `errLine`（可选）：从 `nginx -t` 输出解析出的出错配置文件与行号；无法解析时缺省。该字段在所有携带 `test` 结果的响应（保存校验 409、代理/地址池/upstream 写操作）中同样存在。
+
 **错误**
 - `500`：nginx 不可执行（settings 未配置或路径错误），`error` 说明原因。
 
@@ -287,6 +295,25 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 - `404`：备份不存在。
 - `409`：回滚后 `nginx -t` 校验失败（未写入）。
 
+### GET /api/backups/diff
+
+对比两个版本的配置文件，返回 unified diff 文本。
+
+**参数**
+- `a`（必填）：`current`（当前配置文件）或备份 id。
+- `b`（必填）：同上。
+- `path`（必填）：相对配置目录的文件路径，须存在于两侧数据源。
+
+**成功响应 200**
+
+```json
+{ "diff": "--- current:nginx.conf\n+++ 20260916_120000:nginx.conf\n@@ -1,3 +1,4 @@\n ..." }
+```
+
+**错误**
+- `400`：参数缺失或非法（路径穿越）。
+- `404`：备份不存在或该备份中没有此文件。
+
 ### GET /api/logs/error
 
 返回错误日志尾部（默认最后 200 行）。
@@ -302,6 +329,72 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 
 - `logPath`：自动定位（confDir 同级 logs/error.log）；文件不存在时 `content` 为空字符串。
 - **预览模式**：`controller is None` 时返回 `{"logPath": null, "content": "（预览模式：未配置 nginx，暂无错误日志）"}`。
+
+### GET /api/logs/access
+
+返回访问日志尾部（默认最后 500 行），并给出检测到的候选日志路径。
+
+**参数**
+- `lines`（可选，默认 500，上限 5000）。
+- `path`（可选，绝对路径）：指定读取哪个访问日志文件；缺省时取候选中第一个实际存在的文件。
+
+**成功响应 200**
+
+```json
+{ "logPath": "C:/nginx/logs/access.log", "paths": ["C:/nginx/logs/access.log"], "content": "127.0.0.1 - - [04/Aug/2026 ...] \"GET / HTTP/1.1\" 200 ..." }
+```
+
+- `paths`：从配置文件 `access_log` 指令解析出的候选路径（相对 prefix 解析）+ 默认兜底路径（prefix/logs/access.log 等），按此顺序去重排列。
+- 文件不存在时 `content` 为空字符串（`logPath` 仍返回候选路径）。
+
+**错误**
+- `403`：`path` 越出 prefix / confDir 范围（防任意文件读取）。
+
+### GET /api/metrics
+
+读取 nginx `stub_status` 实时连接指标（每 10 秒前端轮询一次）。
+
+**成功响应 200（已配置且可访问）**
+
+```json
+{
+  "available": true, "port": 80, "stubPath": "/nginx_status",
+  "metrics": { "active": 12, "accepts": 3450, "handled": 3450, "requests": 9876, "reading": 0, "writing": 1, "waiting": 11 }
+}
+```
+
+**成功响应 200（未配置 / 不可访问）**
+
+```json
+{ "available": false, "reason": "not_configured", "port": 80 }
+```
+
+- `reason`：`not_configured`（配置中未找到 `stub_status`）或具体访问失败原因（如 nginx 未运行、location 不可达）。
+- `port`：从配置 `listen` 指令解析的本机访问端口（未找到时默认 80）。
+- **预览模式**：返回 `{"available": false, "preview": true}`。
+
+### POST /api/metrics/enable
+
+一键开启状态页：向 nginx.conf 最后一个 server 块写入受管理的 stub_status location（仅允许 127.0.0.1 访问）。自动备份 + `nginx -t` 校验，失败回滚。写入后需重载 nginx 生效。
+
+**请求体**（可选）
+
+```json
+{ "path": "/nginx_status" }
+```
+
+**成功响应 200**
+
+```json
+{ "ok": true, "stubPath": "/nginx_status", "backupId": "20260916_120000", "test": { "ok": true, "output": "..." } }
+```
+
+- 配置中已存在 stub_status 时不重复写入，返回 `{"ok": true, "already": true, "stubPath": "..."}`。
+
+**错误**
+- `400`：path 非法。
+- `409`：校验失败（已回滚）。
+- `409`：未配置 nginx（预览模式）。
 
 ### GET /api/settings
 
@@ -401,6 +494,7 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 | active | string | 当前激活目标地址（proxy_pass 未注释行的值） |
 | targets | string[] | 全部备选目标地址（激活 + 注释备选，按配置顺序） |
 | proxyHeaders | boolean | 是否包含标准三行 proxy_set_header 样板 |
+| template | string | 场景模板检测：`standard` / `websocket` / `sse` / `upload`（按块内特征指令嗅探，用于列表展示） |
 
 **配置文件表示约定**（唯一权威，nginx 原生语法兼容）：
 - 一个代理 = 一个 `location <path> { ... }` 块，块内含 `proxy_pass <url>;`。
@@ -438,8 +532,15 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 **请求体**
 
 ```json
-{ "path": "/xxxxWeb", "target": "http://192.168.1.10:8080/" }
+{ "path": "/xxxxWeb", "target": "http://192.168.1.10:8080/", "template": "websocket" }
 ```
+
+- `template`（可选，默认 `standard`）：场景模板，决定追加到块内的附加指令：
+  - `standard`：仅标准三行 proxy_set_header。
+  - `websocket`：WebSocket 反代——`proxy_http_version 1.1;`、`Upgrade`/`Connection` 头、`proxy_read_timeout 300s;`。
+  - `sse`：SSE / 流式响应——`proxy_buffering off;`、`proxy_cache off;`、`X-Accel-Buffering no` 头、`proxy_read_timeout 3600s;`。
+  - `upload`：大文件上传——`client_max_body_size 1024m;`、`proxy_request_buffering off;`、读/发超时 300s。
+- `target` 也可以是 upstream 名称（`http://<upstream名>`），用于接入负载均衡（见 upstream 章节）。
 
 **成功响应 200**
 
@@ -628,6 +729,80 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 - `404`：target 不在池中。
 - `409`：该地址在某代理中处于激活状态（需先切换）；或校验失败（已回滚）。
 
+## 负载均衡 upstream
+
+管理 nginx.conf `http{}` 块内的 `upstream <name> { ... }` 定义。代理目标填 `http://<upstream名>` 即接入负载均衡。
+
+**存储（与配置文件合一）**：直接读写 nginx.conf 文本，无独立存储；与代理写操作共用
+备份 → 写入 → `nginx -t` 校验 → 失败回滚流水线。
+**保存即重写整个块**：server 行按「地址 → weight → backup → down → 其余参数」的规范形式重建，
+weight=1 / 非备份 / 非下线等默认值会省略；调度算法仅支持 `round_robin`（默认，无指令行）、`least_conn`、`ip_hash`。
+
+### UpstreamInfo（upstream 模型）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| name | string | upstream 名称（`^[A-Za-z_][A-Za-z0-9_\-]*$`） |
+| method | string | 调度算法：`round_robin` / `least_conn` / `ip_hash` |
+| servers | UpstreamServer[] | 服务器列表（≥1 条） |
+| usedBy | string[] | 引用该 upstream 的代理 location 路径列表（`http://<name>` 目标匹配） |
+
+### UpstreamServer（服务器条目）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| address | string | 服务器地址：`host:port` / IP / `unix:/path`，不含参数 |
+| weight | int | 权重（默认 1，范围 1~100） |
+| backup | boolean | 备机标记 |
+| down | boolean | 下线标记 |
+| extra | string[] | 其余原生参数原样保留（如 `max_fails=3 fail_timeout=30s`） |
+
+### GET /api/upstreams
+
+返回全部 upstream（按配置出现顺序）。
+
+**成功响应 200**
+
+```json
+{ "upstreams": [ { "name": "docker_balance", "method": "least_conn", "servers": [ { "address": "10.1.2.3:8080", "weight": 2, "backup": false, "down": false, "extra": [] } ], "usedBy": ["/app1"] } ] }
+```
+
+- **预览模式**：返回 `{"upstreams": [], "preview": true}`。
+
+### POST /api/upstreams
+
+新建 upstream（重名返回 409）。写入 nginx.conf `http{}` 块末尾，自动备份 + 校验，失败回滚。
+
+**请求体**
+
+```json
+{ "name": "docker_balance", "method": "least_conn", "servers": [ { "address": "10.1.2.3:8080", "weight": 2 }, { "address": "10.1.2.4:8080", "backup": true } ] }
+```
+
+**成功响应 200**
+
+```json
+{ "ok": true, "upstreams": [ ... 全量列表 ... ], "backupId": "20260916_120000", "test": { "ok": true, "output": "..." } }
+```
+
+**错误**
+- `400`：name/method/servers 缺失或非法（地址重复、weight 越界等）。
+- `409`：name 已存在；或校验失败（已回滚）。
+
+### PUT /api/upstreams
+
+更新 upstream（按 name 定位整块重写，name 不可变更）。
+
+**请求体 / 响应 / 错误**：同 POST；name 不存在返回 `404`。
+
+### DELETE /api/upstreams
+
+删除 upstream。若有代理目标（激活或备选）指向该 upstream，返回 `409` 并提示先切换或删除对应代理。
+
+**请求体**：`{ "name": "docker_balance" }`
+**成功响应 200**：`{ "ok": true, "upstreams": [ ... ], "backupId": "...", "test": { ... } }`
+**错误**：`404` 不存在；`409` 被代理引用 / 校验失败（已回滚）。
+
 ## 前端行为约定
 
 - 所有写操作（保存/启停/回滚）在弹确认框后进行；**保存提供「保存并备份 / 仅保存」选择**，备份仅在用户显式确认时执行（不再每次保存自动备份）。
@@ -637,6 +812,19 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 - 目标池地址带别名时，下拉与池列表均显示 `别名 (地址)`；无别名仅显示地址。
 - **代理切换重载询问**：`PUT /api/proxies/switch` 成功后（`nginx -t` 校验通过），前端弹确认框
   「是否立即重载 nginx 配置？」（是/否）——点是调 `POST /api/nginx/reload`，点否仅保存配置不重载。
+- **保存前 diff 预览**：保存配置文件时，前端先在本地对「打开时的原文 vs 编辑器当前内容」做行级 diff，
+  无修改直接提示不请求；有修改则弹窗展示统一 diff（上下文 2 行），由用户选择「保存并备份 / 仅保存 / 取消」。
+- **校验错误行定位**：`test` 结果含 `errFile`/`errLine` 且与当前编辑文件匹配时，前端在测试结果区提供
+  「跳转到第 N 行」按钮，定位并高亮编辑器对应行。
+- **备份对比**：备份列表每项提供「对比」入口，弹窗内可选 `当前文件 / 各备份` 与文件路径，展示两侧 unified diff。
+- **访问日志**：配置页提供访问日志面板，尾部 500 行展示；过滤为前端本地过滤（仅作用于已读取的尾部窗口）；
+  候选日志路径来自后端解析，切换路径重新读取。
+- **实时指标**：状态栏每 10 秒随状态轮询 `GET /api/metrics`，展示活跃连接与请求总量（请求速率由前端按两次采样差值计算）；
+  `available=false` 且 nginx 运行中时展示「开启状态页」入口（调 `POST /api/metrics/enable`，成功后询问是否立即重载）。
+- **代理模板**：添加代理弹窗提供场景模板选择（标准 / WebSocket / SSE / 上传），模板仅影响新建块；
+  代理列表在非 standard 模板时展示对应标签。目标地址输入框的候选 = 地址池 ∪ upstream 名称。
+- **upstream 管理**：代理管理页提供 upstream 面板（新建 / 编辑 / 删除）；编辑弹窗按行维护服务器列表
+  （地址 / 权重 / 备机 / 下线）；保存与删除走备份 + 校验流水线，被代理引用的 upstream 删除会被后端拒绝。
 - **代理搜索过滤**：代理管理页顶部提供搜索框，按代理路径（`path`）、目标地址（`targets`）实时过滤列表；
   输入即过滤（不触发后端请求），空关键词恢复全量列表；提供「清除搜索」按钮一键清空关键词并恢复全量。
 - **预览模式**：`GET /api/settings` 返回 `preview: true` 时，前端跳过首次配置向导直接进入主界面，状态徽章显示「预览模式」；

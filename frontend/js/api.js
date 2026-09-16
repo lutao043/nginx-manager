@@ -60,7 +60,18 @@ const api = {
   backups() { return this.get("/api/backups"); },
   restoreBackup(id) { return this.post("/api/backups/restore", { id }); },
   deleteBackup(id) { return this._request("DELETE", "/api/backups", { id }); },
+  backupDiff(a, b, path) {
+    return this.get("/api/backups/diff?a=" + encodeURIComponent(a)
+      + "&b=" + encodeURIComponent(b) + "&path=" + encodeURIComponent(path));
+  },
   errorLog(lines) { return this.get("/api/logs/error?lines=" + (lines || 200)); },
+  accessLog(lines, path) {
+    let p = "/api/logs/access?lines=" + (lines || 500);
+    if (path) p += "&path=" + encodeURIComponent(path);
+    return this.get(p);
+  },
+  metrics() { return this.get("/api/metrics"); },
+  enableMetrics(path) { return this.post("/api/metrics/enable", { path }); },
   settings() { return this.get("/api/settings"); },
   saveSettings(nginxPath, confDir, backupRetention, port, dataDir) {
     const body = { nginxPath, confDir };
@@ -81,7 +92,7 @@ const api = {
 
   // ---- 代理管理 ----
   proxies() { return this.get("/api/proxies"); },
-  addProxy(path, target) { return this.post("/api/proxies", { path, target }); },
+  addProxy(path, target, template) { return this.post("/api/proxies", { path, target, template }); },
   switchProxy(path, target) { return this.put("/api/proxies/switch", { path, target }); },
   saveProxyTargets(path, targets) { return this.put("/api/proxies/targets", { path, targets }); },
   removeProxy(path) { return this._request("DELETE", "/api/proxies", { path }); },
@@ -91,6 +102,12 @@ const api = {
   addPoolTarget(target, alias) { return this.post("/api/proxy-pool", { target, alias }); },
   setPoolAlias(target, alias) { return this.put("/api/proxy-pool", { target, alias }); },
   removePoolTarget(target) { return this._request("DELETE", "/api/proxy-pool", { target }); },
+
+  // ---- 负载均衡 upstream ----
+  upstreams() { return this.get("/api/upstreams"); },
+  addUpstream(name, method, servers) { return this.post("/api/upstreams", { name, method, servers }); },
+  updateUpstream(name, method, servers) { return this.put("/api/upstreams", { name, method, servers }); },
+  removeUpstream(name) { return this._request("DELETE", "/api/upstreams", { name }); },
 };
 
 /* 简易 XSS 转义：用户数据插入 innerHTML 前必须过此函数 */

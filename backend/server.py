@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import os
 import shutil
@@ -322,6 +323,10 @@ def list_backups(backups_dir: str) -> list:
     return result
 
 
+class _DiffSourceNotFound(Exception):
+    """备份对比数据源缺失（当前文件或指定备份内无此文件）。"""
+
+
 # ---------- 系统文件/目录选择对话框 ----------
 
 _dialog_lock = threading.Lock()  # tkinter 对话框串行化：并发多开 Tk 实例会崩溃
@@ -563,12 +568,20 @@ class Handler(BaseHTTPRequestHandler):
             self._api_config_file_get(qs)
         elif path == "/api/backups":
             self._api_backups()
+        elif path == "/api/backups/diff":
+            self._api_backups_diff(qs)
         elif path == "/api/logs/error":
             self._api_logs_error(qs)
+        elif path == "/api/logs/access":
+            self._api_logs_access(qs)
+        elif path == "/api/metrics":
+            self._api_metrics_get()
         elif path == "/api/proxies":
             self._api_proxies_get()
         elif path == "/api/proxy-pool":
             self._api_proxy_pool_get()
+        elif path == "/api/upstreams":
+            self._api_upstreams_get()
         elif path == "/api/settings":
             self._api_settings_get()
         else:
@@ -664,6 +677,45 @@ class Handler(BaseHTTPRequestHandler):
             "retention": BACKUP_RETENTION,
         })
 
+    def _api_backups_diff(self, qs: dict) -> None:
+        ctl = self._require_controller()
+        if ctl is None:
+            return
+        a = (qs.get("a") or [""])[0].strip()
+        b = (qs.get("b") or [""])[0].strip()
+        rel = self._safe_rel((qs.get("path") or [""])[0])
+        for sid in (a, b):
+            if sid != "current" and not (sid and sid.replace("_", "").isdigit()):
+                self._err(400, "a/b 须为 current 或备份 id")
+                return
+        if rel is None:
+            self._err(400, "path 参数非法")
+            return
+        try:
+            content_a = self._read_diff_source(ctl, a, rel)
+            content_b = self._read_diff_source(ctl, b, rel)
+        except _DiffSourceNotFound as e:
+            self._err(404, str(e))
+            return
+        diff = difflib.unified_diff(
+            content_a.split("\n"), content_b.split("\n"),
+            fromfile=f"{a}:{rel}", tofile=f"{b}:{rel}", lineterm="",
+        )
+        self._ok({"diff": "\n".join(diff)})
+
+    def _read_diff_source(self, ctl: NginxController, sid: str, rel: str) -> str:
+        """读取 diff 数据源：current = 当前配置文件，否则备份目录内的同名文件。"""
+        if sid == "current":
+            abs_path = self._conf_abs(rel)
+            if not os.path.isfile(abs_path):
+                raise _DiffSourceNotFound(f"当前配置中不存在文件: {rel}")
+        else:
+            abs_path = os.path.join(self.data_dirs["backups"], sid, rel.replace("/", os.sep))
+            if not os.path.isfile(abs_path):
+                raise _DiffSourceNotFound(f"备份 {sid} 中不存在文件: {rel}")
+        with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+
     def _api_logs_error(self, qs: dict) -> None:
         if self.controller is None:
             # 预览模式：无 nginx，无错误日志可读
@@ -678,6 +730,70 @@ class Handler(BaseHTTPRequestHandler):
             lines = 200
         log_path, content = ctl.read_error_log(lines)
         self._ok({"logPath": log_path, "content": content})
+
+    def _api_logs_access(self, qs: dict) -> None:
+        if self.controller is None:
+            self._ok({"logPath": None, "paths": [], "content": "（预览模式：未配置 nginx，暂无访问日志）"})
+            return
+        ctl = self._require_controller()
+        if ctl is None:
+            return
+        try:
+            lines = int((qs.get("lines") or ["500"])[0])
+        except ValueError:
+            lines = 500
+        paths = ctl.find_access_log_paths()
+        sel = (qs.get("path") or [""])[0].strip()
+        if sel:
+            abs_sel = os.path.abspath(sel)
+            prefix = os.path.abspath(ctl.prefix)
+            conf_root = os.path.abspath(ctl.conf_dir)
+            if not (abs_sel.startswith(prefix + os.sep) or abs_sel.startswith(conf_root + os.sep)
+                    or abs_sel in (prefix, conf_root)):
+                self._err(403, "日志路径越出 nginx 目录范围")
+                return
+            log_path = abs_sel
+        else:
+            log_path = next((p for p in paths if os.path.isfile(p)), paths[0] if paths else None)
+        content = ctl.read_log_file(log_path, lines) if log_path else ""
+        self._ok({"logPath": log_path, "paths": paths, "content": content})
+
+    def _api_metrics_get(self) -> None:
+        if self.controller is None:
+            self._ok({"available": False, "preview": True})
+            return
+        ctl = self._require_controller()
+        if ctl is None:
+            return
+        port = ctl.detect_listen_port() or 80
+        stub = ctl.find_stub_status()
+        if not stub:
+            self._ok({"available": False, "reason": "not_configured", "port": port})
+            return
+        metrics, reason = ctl.fetch_stub_status(port, stub["path"])
+        if metrics is None:
+            self._ok({"available": False, "reason": reason, "port": port, "stubPath": stub["path"]})
+            return
+        self._ok({"available": True, "port": port, "stubPath": stub["path"], "metrics": metrics})
+
+    def _api_metrics_enable(self) -> None:
+        ctl = self._require_controller()
+        if ctl is None:
+            return
+        stub = ctl.find_stub_status()
+        if stub:
+            self._ok({"ok": True, "already": True, "stubPath": stub["path"]})
+            return
+        body = self._read_json_body()
+        path = str(body.get("path") or "/nginx_status")
+        pm = self._proxy_manager()
+        if pm is None:
+            return
+
+        def mutate(p):
+            return p.enable_stub_status(path)
+        if self._proxy_apply(pm, mutate, extra={"stubPath": path}):
+            return
 
     def _api_settings_get(self) -> None:
         self._ok({
@@ -732,6 +848,10 @@ class Handler(BaseHTTPRequestHandler):
             self._api_proxies_add()
         elif path == "/api/proxy-pool":
             self._api_proxy_pool_add()
+        elif path == "/api/upstreams":
+            self._api_upstreams_save(create=True)
+        elif path == "/api/metrics/enable":
+            self._api_metrics_enable()
         elif path == "/api/pick-path":
             self._api_pick_path()
         elif path == "/api/restart":
@@ -871,6 +991,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_proxies_targets()
         elif path == "/api/proxy-pool":
             self._api_proxy_pool_put()
+        elif path == "/api/upstreams":
+            self._api_upstreams_save(create=False)
         else:
             self._err(404, "接口不存在")
 
@@ -881,6 +1003,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_proxies_remove()
         elif path == "/api/proxy-pool":
             self._api_proxy_pool_remove()
+        elif path == "/api/upstreams":
+            self._api_upstreams_remove()
         elif path == "/api/backups":
             self._api_backups_delete()
         else:
@@ -1076,7 +1200,7 @@ class Handler(BaseHTTPRequestHandler):
         return ProxyManager(conf_path)
 
     def _proxy_apply(self, pm, mutate, path=None, extra=None):
-        """统一执行代理写变更：mutate(pm) 返回 {ok, ...}。
+        """统一执行配置写变更（代理/地址池/upstream/stub_status）：mutate(pm) 返回 {ok, ...}。
 
         - mutate 失败：按错误语义发 4xx 响应，返回 True（调用方直接 return）。
         - 内容无变化（pm.content 未改变）：跳过备份与 nginx -t，直接发成功响应
@@ -1084,6 +1208,7 @@ class Handler(BaseHTTPRequestHandler):
         - 内容有变化：先备份 → commit → nginx -t 校验；校验失败回滚原文并回 409；
           成功发成功响应。
         - mutate 返回值中除 ok/error 外的键合并进成功响应（如池操作的 targets）。
+        - path 存在时（代理操作）响应附带变更后该代理的 ProxyInfo。
         返回 True 表示响应已发送，调用方应 return。"""
         original = pm.content
         res = mutate(pm)
@@ -1092,7 +1217,9 @@ class Handler(BaseHTTPRequestHandler):
             status = 400
             if "不存在" in err or "不在池中" in err:
                 status = 404
-            elif "备选" in err or "校验" in err or "激活" in err or "已在池中" in err or "没有代理" in err:
+            elif ("备选" in err or "校验" in err or "激活" in err or "已在池中" in err
+                  or "没有代理" in err or "已存在" in err or "引用" in err or "http 块" in err
+                  or "server 块" in err):
                 status = 409
             self._err(status, err)
             return True
@@ -1100,8 +1227,10 @@ class Handler(BaseHTTPRequestHandler):
         if pm.content == original:
             # 无实际变化（如切换到已激活目标、备选列表与当前一致），不备份不校验
             proxy = next((p for p in pm.list_proxies() if p["path"] == path), None) if path else None
-            payload = {"ok": True, "proxy": proxy, "backupId": None,
+            payload = {"ok": True, "backupId": None,
                        "test": {"ok": True, "output": "配置无变化，未做改动"}}
+            if path:
+                payload["proxy"] = proxy
             payload.update(res_extra)
             payload.update(extra or {})
             self._ok(payload)
@@ -1117,8 +1246,9 @@ class Handler(BaseHTTPRequestHandler):
                 "test": result,
             })
             return True
-        proxy = next((p for p in pm.list_proxies() if p["path"] == path), None) if path else None
-        payload = {"ok": True, "proxy": proxy, "backupId": backup_id, "test": result}
+        payload = {"ok": True, "backupId": backup_id, "test": result}
+        if path:
+            payload["proxy"] = next((p for p in pm.list_proxies() if p["path"] == path), None)
         payload.update(res_extra)
         payload.update(extra or {})
         self._ok(payload)
@@ -1141,9 +1271,10 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_json_body()
         path = str(body.get("path", ""))
         target = str(body.get("target", ""))
+        template = str(body.get("template") or "standard")
 
         def mutate(pm):
-            return pm.add(path, target)
+            return pm.add(path, target, template)
         if self._proxy_apply(pm, mutate, path):
             return
 
@@ -1270,6 +1401,57 @@ class Handler(BaseHTTPRequestHandler):
         def mutate(pm):
             return pm.remove(path)
         if self._proxy_apply(pm, mutate, path, extra={"deleted": path}):
+            return
+
+    # ---- 负载均衡 upstream ----
+
+    def _api_upstreams_get(self) -> None:
+        if self.controller is None:
+            self._ok({"upstreams": [], "preview": True})
+            return
+        pm = self._proxy_manager()
+        if pm is None:
+            return
+        self._ok({"upstreams": pm.upstream_list()})
+
+    def _api_upstreams_save(self, create: bool = True) -> None:
+        pm = self._proxy_manager()
+        if pm is None:
+            return
+        body = self._read_json_body()
+        name = str(body.get("name", "")).strip()
+        method = str(body.get("method") or "round_robin")
+        servers = body.get("servers")
+
+        def mutate(p):
+            exists = any(u["name"] == name for u in p.upstream_list())
+            if create and exists:
+                return {"ok": False, "error": f"upstream 已存在: {name}"}
+            if not create and not exists:
+                return {"ok": False, "error": f"upstream 不存在: {name}"}
+            res = p.upstream_save(name, method, servers)
+            if res.get("ok"):
+                res["upstreams"] = p.upstream_list()
+            return res
+        if self._proxy_apply(pm, mutate, extra={"name": name}):
+            return
+
+    def _api_upstreams_remove(self) -> None:
+        pm = self._proxy_manager()
+        if pm is None:
+            return
+        body = self._read_json_body()
+        name = str(body.get("name", "")).strip()
+        if not name:
+            self._err(400, "name 必填")
+            return
+
+        def mutate(p):
+            res = p.upstream_remove(name)
+            if res.get("ok"):
+                res["upstreams"] = p.upstream_list()
+            return res
+        if self._proxy_apply(pm, mutate, extra={"deleted": name}):
             return
 
     # ---- 日志 ----

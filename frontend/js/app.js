@@ -4,6 +4,7 @@
 const App = (() => {
   let treeData = null;      // 配置树
   let currentFile = null;   // 当前编辑文件相对路径
+  let originalContent = ""; // 当前文件打开时的原文（保存前 diff 基准）
   let statusTimer = null;   // 状态轮询
   let editing = false;      // 编辑器是否有未保存改动
   let preview = false;      // 预览模式（未配置 nginx）
@@ -45,7 +46,7 @@ const App = (() => {
     $("#wizard").hidden = true;
     $("#dashboard").hidden = false;
     refreshStatus();
-    await Promise.all([loadTree(), loadBackups(), loadErrorLog()]);
+    await Promise.all([loadTree(), loadBackups(), loadErrorLog(), loadAccessLog()]);
     if (preview) {
       toast("预览模式：未配置 nginx，可浏览界面；点「设置」配置后可操作", "info");
     } else {
@@ -96,6 +97,25 @@ const App = (() => {
     // 备份/日志
     $("#btnRefreshBackups").addEventListener("click", loadBackups);
     $("#btnRefreshLog").addEventListener("click", loadErrorLog);
+    // 访问日志
+    $("#btnRefreshAccessLog").addEventListener("click", loadAccessLog);
+    $("#accessLogPath").addEventListener("change", loadAccessLog);
+    $("#accessLogFilter").addEventListener("input", debounce(renderAccessLog, 150));
+    // 负载均衡 upstream
+    $("#btnRefreshUpstreams").addEventListener("click", loadUpstreams);
+    $("#btnAddUpstream").addEventListener("click", () => openUpstreamModal(null));
+    $("#btnSaveUpstream").addEventListener("click", saveUpstream);
+    $("#btnUpstreamAddServer").addEventListener("click", () => {
+      $("#upstreamServers").appendChild(buildUpstreamServerRow("", 1, false, false, []));
+    });
+    // 实时指标（stub_status）
+    $("#btnMetricsEnable").addEventListener("click", enableMetricsFlow);
+    // 保存前 diff 弹窗
+    $("#btnSaveDiffCancel").addEventListener("click", closeSaveDiff);
+    $("#btnSaveDiffPlain").addEventListener("click", () => doSaveFile(false));
+    $("#btnSaveDiffBackup").addEventListener("click", () => doSaveFile(true));
+    // 备份对比弹窗
+    ["#diffA", "#diffB", "#diffPath"].forEach((sel) => $(sel).addEventListener("change", loadBackupDiff));
     // 页签
     $("#tabConfig").addEventListener("click", () => switchTab("config"));
     $("#tabProxies").addEventListener("click", () => switchTab("proxies"));
@@ -142,6 +162,9 @@ const App = (() => {
     bindModalClose("#addProxyModal");
     bindModalClose("#editTargetsModal");
     bindModalClose("#poolModal");
+    bindModalClose("#upstreamModal");
+    bindModalClose("#saveDiffModal");
+    bindModalClose("#backupDiffModal");
     bindModalClose("#addPoolModal", () => {
       // 关闭池弹窗时重置编辑态
       if (editingPoolItem) resetPoolModal();
@@ -158,6 +181,7 @@ const App = (() => {
     if (!isConfig) {
       loadPool();
       loadProxies();
+      loadUpstreams();
     }
   }
 
@@ -337,8 +361,72 @@ const App = (() => {
         cp.textContent = st.confPath || (preview ? "（预览模式，未配置）" : "—");
         cp.title = st.confPath || "";
       }
+      // 实时连接指标（stub_status）
+      updateMetrics(st);
     } catch (e) {
       // 服务不可达时静默，保底显示
+    }
+  }
+
+  /* ---------- 实时指标（stub_status） ---------- */
+  let lastMetricsSample = null; // 上次采样 {ts, requests}，用于前端计算请求速率
+
+  async function updateMetrics(st) {
+    const connEl = $("#stConn"), reqEl = $("#stReq"), btn = $("#btnMetricsEnable");
+    if (preview || !st.running) {
+      connEl.textContent = "—";
+      reqEl.textContent = "—";
+      btn.hidden = true;
+      lastMetricsSample = null;
+      return;
+    }
+    try {
+      const m = await api.metrics();
+      if (m.available) {
+        const mt = m.metrics || {};
+        connEl.textContent = mt.active != null ? mt.active : "—";
+        let reqText = mt.requests != null ? String(mt.requests) : "—";
+        if (mt.requests != null && lastMetricsSample) {
+          const dt = (Date.now() - lastMetricsSample.ts) / 1000;
+          const dr = mt.requests - lastMetricsSample.requests;
+          if (dt > 0 && dr >= 0) reqText += "（+" + (dr / dt).toFixed(1) + "/s）";
+        }
+        reqEl.textContent = reqText;
+        lastMetricsSample = mt.requests != null ? { ts: Date.now(), requests: mt.requests } : null;
+        btn.hidden = true;
+      } else {
+        connEl.textContent = "—";
+        reqEl.textContent = "—";
+        lastMetricsSample = null;
+        // nginx 运行中但未配置 stub_status → 提供一键开启
+        btn.hidden = m.reason !== "not_configured";
+      }
+    } catch (e) { /* 指标获取失败不影响状态栏 */ }
+  }
+
+  async function enableMetricsFlow() {
+    if (inPreviewGuard("开启状态页")) return;
+    const ok = await confirmDialog("将在 nginx.conf 最后一个 server 块写入 stub_status 状态页（/nginx_status，仅允许本机访问），自动备份并校验。确认？");
+    if (!ok) return;
+    try {
+      const res = await api.enableMetrics();
+      if (res.already) {
+        toast("状态页已存在，无需重复开启", "info");
+      } else {
+        toast("状态页配置已写入并通过 nginx -t 校验", "success");
+        const reloadNow = await confirmDialog("是否立即重载 nginx 使状态页生效？");
+        if (reloadNow) {
+          try {
+            const r = await api.nginxAction("reload");
+            toast((r && r.message) || "nginx 配置已重载", "success");
+          } catch (e) {
+            toast(e.message, "error");
+          }
+        }
+      }
+      refreshStatus();
+    } catch (e) {
+      toast(e.message, "error");
     }
   }
 
@@ -409,6 +497,7 @@ const App = (() => {
     renderTree(); // 高亮
     try {
       const data = await api.readFile(path);
+      originalContent = data.content;
       $("#editor").value = data.content;
       $("#editorTitle").textContent = data.path;
       $("#editorPanel").hidden = false;
@@ -421,15 +510,27 @@ const App = (() => {
     }
   }
 
+  /* 保存入口：先本地 diff 预览（与打开时原文对比），无修改直接提示；
+     有修改弹窗展示统一 diff，由用户选择「保存并备份 / 仅保存 / 取消」。 */
   async function saveFile() {
     if (!currentFile) return;
     if (inPreviewGuard("保存配置")) return;
-    const choice = await confirmChoice("保存修改？备份仅在你显式确认时执行。", [
-      { label: "保存并备份", value: "backup", primary: true },
-      { label: "仅保存", value: "save" },
-    ]);
-    if (!choice) return;
-    const doBackup = choice === "backup";
+    const content = $("#editor").value;
+    if (content === originalContent) {
+      toast("内容无修改", "info");
+      return;
+    }
+    $("#saveDiffView").innerHTML = renderDiffHtml(lineDiff(originalContent, content));
+    lockBody();
+    openModal("#saveDiffModal");
+  }
+
+  function closeSaveDiff() {
+    closeModal("#saveDiffModal");
+    unlockBody();
+  }
+
+  async function doSaveFile(doBackup) {
     const content = $("#editor").value;
     try {
       const res = await api.saveFile(currentFile, content, true, doBackup);
@@ -439,6 +540,7 @@ const App = (() => {
       showTestResult(res.test);
       $("#saveWarning").hidden = true;
       editing = false;
+      originalContent = content;
       toast(res.backedUp ? "配置已保存并备份" : "配置已保存（未备份）", "success");
       loadBackups();
     } catch (e) {
@@ -453,10 +555,13 @@ const App = (() => {
         if (rb && e.payload.backupId) rb.addEventListener("click", () => rollbackFile(e.payload.backupId));
         showTestResult(e.payload.test);
         editing = false;
+        originalContent = content;
         toast("配置已保存，但校验失败", "error");
       } else {
         toast(e.message, "error");
       }
+    } finally {
+      closeSaveDiff();
     }
   }
 
@@ -481,6 +586,40 @@ const App = (() => {
     el.textContent = test.output || "";
     el.className = "test-result " + (test.ok ? "ok" : "fail");
     el.hidden = false;
+    appendJumpLink(el, test);
+  }
+
+  /* 校验失败且能解析出错误行时，提供「跳转到第 N 行」（文件匹配时）或错误位置提示 */
+  function appendJumpLink(el, test) {
+    const old = $("#btnJumpErr");
+    if (old) old.remove();
+    if (!test || test.ok || !test.errLine) return;
+    const norm = (s) => String(s || "").replace(/\\/g, "/").toLowerCase();
+    const sameFile = currentFile && test.errFile
+      && norm(test.errFile).endsWith("/" + norm(currentFile));
+    const btn = document.createElement("button");
+    btn.className = "btn btn-mini";
+    btn.id = "btnJumpErr";
+    btn.style.marginTop = "8px";
+    btn.textContent = sameFile
+      ? "跳转到第 " + test.errLine + " 行"
+      : "错误位于 " + (test.errFile || "?") + ":" + test.errLine;
+    if (sameFile) btn.addEventListener("click", () => jumpToLine(test.errLine));
+    el.appendChild(document.createElement("br"));
+    el.appendChild(btn);
+  }
+
+  /* 编辑器定位到指定行：选中该行并滚动到可视区 */
+  function jumpToLine(n) {
+    const ed = $("#editor");
+    const lines = ed.value.split("\n");
+    let pos = 0;
+    for (let i = 0; i < n - 1 && i < lines.length; i++) pos += lines[i].length + 1;
+    ed.focus();
+    ed.setSelectionRange(pos, pos + (lines[n - 1] || "").length);
+    const lh = parseFloat(getComputedStyle(ed).lineHeight) || 22;
+    ed.scrollTop = Math.max(0, (n - 8) * lh);
+    $("#editorMeta").textContent = "● 已定位到第 " + n + " 行";
   }
 
   /* ---------- 配置校验 ---------- */
@@ -531,6 +670,11 @@ const App = (() => {
       files.textContent = (b.files || []).join(", ");
       const actions = document.createElement("div");
       actions.className = "backup-actions";
+      const btnDiff = document.createElement("button");
+      btnDiff.className = "btn btn-mini";
+      btnDiff.textContent = "对比";
+      btnDiff.title = "与其他版本对比差异";
+      btnDiff.addEventListener("click", () => openBackupDiff(b.id));
       const btnRestore = document.createElement("button");
       btnRestore.className = "btn btn-mini";
       btnRestore.textContent = "回滚";
@@ -539,6 +683,7 @@ const App = (() => {
       btnDel.className = "btn btn-mini btn-danger";
       btnDel.textContent = "删除";
       btnDel.addEventListener("click", () => doDeleteBackup(b));
+      actions.appendChild(btnDiff);
       actions.appendChild(btnRestore);
       actions.appendChild(btnDel);
       row.appendChild(meta);
@@ -595,6 +740,59 @@ const App = (() => {
     } catch (e) {
       toast(e.message, "error");
     }
+  }
+
+  /* ---------- 访问日志（尾部 500 行，过滤为本地过滤） ---------- */
+  let accessLogRaw = "";
+
+  async function loadAccessLog() {
+    const sel = $("#accessLogPath");
+    if (preview) {
+      accessLogRaw = "";
+      $("#accessLog").textContent = "（预览模式：未配置 nginx，暂无访问日志）";
+      $("#accessLogPathLabel").textContent = "";
+      sel.hidden = true;
+      return;
+    }
+    try {
+      const data = await api.accessLog(500, sel.value || "");
+      accessLogRaw = data.content || "";
+      $("#accessLogPathLabel").textContent = data.logPath ? "📄 " + data.logPath : "";
+      const paths = data.paths || [];
+      if (paths.length) {
+        sel.hidden = false;
+        const cur = sel.value || data.logPath || "";
+        sel.innerHTML = "";
+        paths.forEach((p) => {
+          const o = document.createElement("option");
+          o.value = p;
+          o.textContent = p;
+          if (p === cur) o.selected = true;
+          sel.appendChild(o);
+        });
+      } else {
+        sel.hidden = true;
+      }
+      renderAccessLog();
+    } catch (e) {
+      accessLogRaw = "";
+      $("#accessLog").textContent = "加载失败：" + e.message;
+    }
+  }
+
+  function renderAccessLog() {
+    const el = $("#accessLog");
+    if (!accessLogRaw) {
+      el.textContent = "（访问日志为空或文件不存在）";
+      return;
+    }
+    const kw = $("#accessLogFilter").value.trim().toLowerCase();
+    if (!kw) {
+      el.textContent = accessLogRaw;
+      return;
+    }
+    const lines = accessLogRaw.split("\n").filter((l) => l.toLowerCase().includes(kw));
+    el.textContent = lines.length ? lines.join("\n") : "（无匹配行）";
   }
 
   /* ---------- 代理管理 ---------- */
@@ -666,6 +864,26 @@ const App = (() => {
       $("#poolList").innerHTML = '<p class="muted">加载失败</p>';
     }
     renderPoolCount();
+    renderTargetOptions();
+  }
+
+  /* 目标地址输入候选（datalist）：地址池 ∪ upstream 名称 */
+  function renderTargetOptions() {
+    const dl = $("#proxyTargetOptions");
+    if (!dl) return;
+    dl.innerHTML = "";
+    poolTargets.forEach((p) => {
+      const o = document.createElement("option");
+      o.value = p.target;
+      if (p.alias) o.label = p.alias;
+      dl.appendChild(o);
+    });
+    allUpstreams.forEach((u) => {
+      const o = document.createElement("option");
+      o.value = "http://" + u.name;
+      o.label = "upstream · " + upstreamMethodLabel(u.method);
+      dl.appendChild(o);
+    });
   }
 
   function renderPoolCount() {
@@ -805,6 +1023,7 @@ const App = (() => {
     el.textContent = test.output || "";
     el.className = "test-result " + (test.ok ? "ok" : "fail");
     el.hidden = false;
+    appendJumpLink(el, test);
   }
 
   function renderProxyList(proxies) {
@@ -827,6 +1046,14 @@ const App = (() => {
       active.className = "proxy-active";
       active.textContent = "当前 → " + p.active;
       head.appendChild(path);
+      // 场景模板标签（非 standard 时展示）
+      const TEMPLATE_LABELS = { websocket: "WebSocket", sse: "流式", upload: "上传" };
+      if (p.template && p.template !== "standard" && TEMPLATE_LABELS[p.template]) {
+        const tag = document.createElement("span");
+        tag.className = "tag-template";
+        tag.textContent = TEMPLATE_LABELS[p.template];
+        head.appendChild(tag);
+      }
       head.appendChild(active);
 
       const row = document.createElement("div");
@@ -946,6 +1173,7 @@ const App = (() => {
   function openAddProxy() {
     $("#addProxyPath").value = "";
     $("#addProxyTarget").value = "";
+    $("#addProxyTemplate").value = "standard";
     $("#addProxyError").hidden = true;
     lockBody();
     openModal("#addProxyModal");
@@ -955,12 +1183,13 @@ const App = (() => {
     if (inPreviewGuard("添加代理")) return;
     const path = $("#addProxyPath").value.trim();
     const target = $("#addProxyTarget").value.trim();
+    const template = $("#addProxyTemplate").value;
     if (!path || !target) {
       showAddProxyError("路径与目标地址均必填");
       return;
     }
     try {
-      const res = await api.addProxy(path, target);
+      const res = await api.addProxy(path, target, template);
       closeModal("#addProxyModal");
       unlockBody();
       showProxyTest(res.test);
@@ -1051,6 +1280,350 @@ const App = (() => {
       $("#editTargetsError").textContent = e.message;
       $("#editTargetsError").hidden = false;
     }
+  }
+
+  /* ---------- 负载均衡 upstream ---------- */
+  let allUpstreams = [];
+  let editingUpstream = null; // null = 新建
+
+  function upstreamMethodLabel(m) {
+    return m === "least_conn" ? "least_conn" : m === "ip_hash" ? "ip_hash" : "轮询";
+  }
+
+  async function loadUpstreams() {
+    try {
+      const data = await api.upstreams();
+      allUpstreams = data.upstreams || [];
+      $("#upstreamCount").textContent = allUpstreams.length ? "（" + allUpstreams.length + "）" : "";
+      renderUpstreamList();
+      renderTargetOptions();
+    } catch (e) {
+      $("#upstreamList").innerHTML = '<p class="muted">加载失败：' + escapeHtml(e.message) + "</p>";
+    }
+  }
+
+  function renderUpstreamList() {
+    const list = $("#upstreamList");
+    if (!allUpstreams.length) {
+      list.innerHTML = '<p class="muted">暂无 upstream；用于多台后端的负载均衡，代理目标填 http://名称 即可引用</p>';
+      return;
+    }
+    list.innerHTML = "";
+    allUpstreams.forEach((u) => {
+      const item = document.createElement("div");
+      item.className = "proxy-item";
+
+      const head = document.createElement("div");
+      head.className = "proxy-item-head";
+      const name = document.createElement("span");
+      name.className = "proxy-path";
+      name.textContent = u.name;
+      const right = document.createElement("span");
+      right.className = "upstream-meta";
+      const methodTag = document.createElement("span");
+      methodTag.className = "tag-template";
+      methodTag.textContent = upstreamMethodLabel(u.method);
+      right.appendChild(methodTag);
+      if (u.usedBy && u.usedBy.length) {
+        const used = document.createElement("span");
+        used.className = "muted small";
+        used.textContent = " 被 " + u.usedBy.join(", ") + " 引用";
+        right.appendChild(used);
+      }
+      head.appendChild(name);
+      head.appendChild(right);
+
+      const servers = document.createElement("div");
+      servers.className = "upstream-servers";
+      (u.servers || []).forEach((s) => {
+        const row = document.createElement("div");
+        row.className = "srv mono";
+        const bits = [s.address];
+        if (s.weight !== 1) bits.push("weight=" + s.weight);
+        if (s.backup) bits.push("backup");
+        if (s.down) bits.push("down");
+        (s.extra || []).forEach((x) => bits.push(x));
+        row.textContent = bits.join(" ");
+        if (s.down) {
+          row.style.opacity = ".5";
+          row.title = "已下线";
+        }
+        servers.appendChild(row);
+      });
+
+      const row = document.createElement("div");
+      row.className = "proxy-item-row";
+      const actions = document.createElement("div");
+      actions.className = "proxy-item-actions";
+      const btnEdit = document.createElement("button");
+      btnEdit.className = "btn btn-mini";
+      btnEdit.textContent = "编辑";
+      btnEdit.addEventListener("click", () => openUpstreamModal(u));
+      const btnDel = document.createElement("button");
+      btnDel.className = "btn btn-mini";
+      btnDel.textContent = "删除";
+      btnDel.addEventListener("click", () => doRemoveUpstream(u));
+      actions.appendChild(btnEdit);
+      actions.appendChild(btnDel);
+      row.appendChild(actions);
+
+      item.appendChild(head);
+      item.appendChild(servers);
+      item.appendChild(row);
+      list.appendChild(item);
+    });
+  }
+
+  function openUpstreamModal(u) {
+    editingUpstream = u || null;
+    $("#upstreamModalTitle").textContent = u ? "编辑 Upstream — " + u.name : "新建 Upstream";
+    $("#upstreamName").value = u ? u.name : "";
+    $("#upstreamName").disabled = !!u;
+    $("#upstreamMethod").value = u ? (u.method || "round_robin") : "round_robin";
+    const list = $("#upstreamServers");
+    list.innerHTML = "";
+    const servers = u && u.servers && u.servers.length
+      ? u.servers
+      : [{ address: "", weight: 1, backup: false, down: false, extra: [] }];
+    servers.forEach((s) => list.appendChild(buildUpstreamServerRow(s.address, s.weight, s.backup, s.down, s.extra)));
+    $("#upstreamError").hidden = true;
+    lockBody();
+    openModal("#upstreamModal");
+  }
+
+  function buildUpstreamServerRow(address, weight, backup, down, extra) {
+    const row = document.createElement("div");
+    row.className = "targets-edit-row upstream-server-row";
+    if (extra && extra.length) row.dataset.extra = extra.join(" ");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = address || "";
+    input.placeholder = "10.1.2.3:8080";
+    const w = document.createElement("input");
+    w.type = "number";
+    w.min = "1";
+    w.max = "100";
+    w.value = weight || 1;
+    w.title = "权重（1~100）";
+    w.className = "up-weight";
+    const mkCheck = (labelText, checked) => {
+      const lab = document.createElement("label");
+      lab.className = "up-check";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = !!checked;
+      lab.appendChild(cb);
+      lab.appendChild(document.createTextNode(labelText));
+      return lab;
+    };
+    const del = document.createElement("button");
+    del.className = "btn-remove-row";
+    del.type = "button";
+    del.textContent = "×";
+    del.title = "删除此行";
+    del.addEventListener("click", () => row.remove());
+    row.appendChild(input);
+    row.appendChild(w);
+    row.appendChild(mkCheck("备机", backup));
+    row.appendChild(mkCheck("下线", down));
+    row.appendChild(del);
+    return row;
+  }
+
+  function showUpstreamError(msg) {
+    const el = $("#upstreamError");
+    el.textContent = msg;
+    el.hidden = false;
+  }
+
+  async function saveUpstream() {
+    if (inPreviewGuard(editingUpstream ? "编辑 upstream" : "新建 upstream")) return;
+    const name = $("#upstreamName").value.trim();
+    const method = $("#upstreamMethod").value;
+    if (!name) {
+      showUpstreamError("名称必填");
+      return;
+    }
+    const servers = [];
+    $$("#upstreamServers .upstream-server-row").forEach((row) => {
+      const addr = row.querySelector('input[type="text"]').value.trim();
+      if (!addr) return; // 空行跳过
+      const weight = parseInt(row.querySelector('input[type="number"]').value, 10) || 1;
+      const checks = row.querySelectorAll('input[type="checkbox"]');
+      servers.push({
+        address: addr,
+        weight: weight,
+        backup: checks[0].checked,
+        down: checks[1].checked,
+        extra: (row.dataset.extra || "").split(/\s+/).filter(Boolean),
+      });
+    });
+    if (!servers.length) {
+      showUpstreamError("至少填写一台服务器");
+      return;
+    }
+    try {
+      const res = editingUpstream
+        ? await api.updateUpstream(name, method, servers)
+        : await api.addUpstream(name, method, servers);
+      closeModal("#upstreamModal");
+      unlockBody();
+      showProxyTest(res.test);
+      toast("upstream 已保存", "success");
+      loadUpstreams();
+    } catch (e) {
+      showUpstreamError(e.message);
+    }
+  }
+
+  async function doRemoveUpstream(u) {
+    if (inPreviewGuard("删除 upstream")) return;
+    const ok = await confirmDialog("删除 upstream " + u.name + "？\n将移除整个 upstream 块并校验配置（被代理引用时会被拒绝）。");
+    if (!ok) return;
+    try {
+      const res = await api.removeUpstream(u.name);
+      showProxyTest(res.test);
+      toast("已删除 upstream: " + u.name, "success");
+      loadUpstreams();
+    } catch (e) {
+      toast(e.message, "error");
+    }
+  }
+
+  /* ---------- 备份对比 ---------- */
+  let diffBackups = [];
+
+  function flattenTreeFiles(nodes, out) {
+    out = out || [];
+    (nodes || []).forEach((n) => {
+      if (n.isDir) flattenTreeFiles(n.children, out);
+      else out.push(n.path);
+    });
+    return out;
+  }
+
+  async function openBackupDiff(backupId) {
+    let data;
+    try {
+      data = await api.backups();
+    } catch (e) {
+      toast(e.message, "error");
+      return;
+    }
+    diffBackups = data.backups || [];
+    const paths = new Set(flattenTreeFiles(treeData));
+    diffBackups.forEach((b) => (b.files || []).forEach((f) => paths.add(f)));
+    const pathSel = $("#diffPath");
+    pathSel.innerHTML = "";
+    Array.from(paths).sort().forEach((p) => {
+      const o = document.createElement("option");
+      o.value = p;
+      o.textContent = p;
+      pathSel.appendChild(o);
+    });
+    if (currentFile && paths.has(currentFile)) pathSel.value = currentFile;
+    const fillVersion = (sel, def) => {
+      sel.innerHTML = "";
+      const cur = document.createElement("option");
+      cur.value = "current";
+      cur.textContent = "当前文件";
+      sel.appendChild(cur);
+      diffBackups.forEach((b) => {
+        const o = document.createElement("option");
+        o.value = b.id;
+        o.textContent = b.createdAt + "（" + b.id + "）";
+        sel.appendChild(o);
+      });
+      if (def) sel.value = def;
+    };
+    fillVersion($("#diffA"), "current");
+    fillVersion($("#diffB"), backupId || (diffBackups[0] && diffBackups[0].id));
+    lockBody();
+    openModal("#backupDiffModal");
+    loadBackupDiff();
+  }
+
+  async function loadBackupDiff() {
+    const a = $("#diffA").value, b = $("#diffB").value, path = $("#diffPath").value;
+    if (!a || !b || !path) return;
+    const view = $("#backupDiffView");
+    view.textContent = "加载中…";
+    try {
+      const res = await api.backupDiff(a, b, path);
+      view.innerHTML = res.diff ? renderUnifiedDiffHtml(res.diff) : "（无差异）";
+    } catch (e) {
+      view.textContent = e.message;
+    }
+  }
+
+  /* ---------- diff 工具（零依赖行级 diff） ---------- */
+
+  /* 编辑器保存预览：对两段文本做行级 LCS diff，返回 [类型, 行] 序列，
+     类型 ' ' 上下文 / '-' 删除 / '+' 新增 / 'hunk' 省略标记；上下文压缩为变更点前后各 2 行 */
+  function lineDiff(oldText, newText) {
+    const a = String(oldText == null ? "" : oldText).split("\n");
+    const b = String(newText == null ? "" : newText).split("\n");
+    let start = 0;
+    while (start < a.length && start < b.length && a[start] === b[start]) start++;
+    let ea = a.length, eb = b.length;
+    while (ea > start && eb > start && a[ea - 1] === b[eb - 1]) { ea--; eb--; }
+    const am = a.slice(start, ea), bm = b.slice(start, eb);
+    const ops = [];
+    if (am.length * bm.length > 1000000) {
+      // 超大改动退化为整体替换，避免 LCS 平方开销
+      am.forEach((l) => ops.push(["-", l]));
+      bm.forEach((l) => ops.push(["+", l]));
+    } else {
+      const n = am.length, m = bm.length;
+      const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+      for (let i = n - 1; i >= 0; i--) {
+        for (let j = m - 1; j >= 0; j--) {
+          dp[i][j] = am[i] === bm[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+        }
+      }
+      let i = 0, j = 0;
+      while (i < n && j < m) {
+        if (am[i] === bm[j]) { ops.push([" ", am[i]]); i++; j++; }
+        else if (dp[i + 1][j] >= dp[i][j + 1]) { ops.push(["-", am[i]]); i++; }
+        else { ops.push(["+", bm[j]]); j++; }
+      }
+      while (i < n) ops.push(["-", am[i++]]);
+      while (j < m) ops.push(["+", bm[j++]]);
+    }
+    const keep = new Array(ops.length).fill(false);
+    ops.forEach((o, idx) => {
+      if (o[0] !== " ") {
+        for (let k = Math.max(0, idx - 2); k <= Math.min(ops.length - 1, idx + 2); k++) keep[k] = true;
+      }
+    });
+    const out = [];
+    let skipped = false;
+    ops.forEach((o, idx) => {
+      if (keep[idx]) {
+        if (skipped) { out.push(["hunk", "⋯"]); skipped = false; }
+        out.push(o);
+      } else skipped = true;
+    });
+    return out;
+  }
+
+  function renderDiffHtml(ops) {
+    return ops.map(([t, line]) => {
+      const cls = t === "+" ? "dl-add" : t === "-" ? "dl-del" : t === "hunk" ? "dl-hunk" : "dl-ctx";
+      const sign = t === "hunk" ? "" : t;
+      return '<span class="' + cls + '">' + escapeHtml(sign + line) + "</span>";
+    }).join("");
+  }
+
+  /* 后端 unified diff 文本上色（备份对比） */
+  function renderUnifiedDiffHtml(text) {
+    return String(text).split("\n").map((line) => {
+      let cls = "dl-ctx";
+      if (line.startsWith("+") && !line.startsWith("+++")) cls = "dl-add";
+      else if (line.startsWith("-") && !line.startsWith("---")) cls = "dl-del";
+      else if (line.startsWith("@@")) cls = "dl-hunk";
+      return '<span class="' + cls + '">' + escapeHtml(line) + "</span>";
+    }).join("");
   }
 
   return { init };
