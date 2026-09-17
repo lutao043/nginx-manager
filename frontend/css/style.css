@@ -643,20 +643,23 @@ body.first-load .backup-item{animation:slideUp var(--dur) var(--ease-out) both}
   animation:fadeIn var(--dur) ease both;
 }
 
-/* 代理视图工作台布局：代理列表弹性占主体（内部滚动），
-   upstream 停靠底部固定高度常驻可见，代理再多也无需长滚动寻找 */
+/* 代理视图工作台布局：代理列表弹性占主体（内部滚动），免长滚动寻找 */
 #viewProxies .content{overflow:hidden;gap:14px;padding:18px 24px 20px}
 #viewProxies .proxy-panel{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden}
 #viewProxies .proxy-panel .proxy-list{flex:1;min-height:0;overflow:auto;padding-right:4px}
 #viewProxies .proxy-panel .test-result{margin:0 0 12px}
-#viewProxies .upstream-panel{
-  flex:0 0 auto;height:clamp(230px,36%,420px);
-  display:flex;flex-direction:column;overflow:hidden;
-  padding:14px 18px 16px;
+
+/* 负载均衡视图：独立页签，upstream 面板弹性占满主体（内部滚动） */
+#viewUpstreams .content{overflow:hidden;padding:18px 24px 20px}
+#viewUpstreams .upstream-panel{
+  flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden;
 }
-#viewProxies .upstream-panel .panel-title-row{margin-bottom:10px}
-#viewProxies .upstream-panel .proxy-tip{margin-bottom:10px}
-#viewProxies .upstream-panel .proxy-list{flex:1;min-height:0;overflow:auto;padding-right:4px}
+#viewUpstreams .upstream-panel .panel-title-row{flex:none;margin-bottom:10px}
+#viewUpstreams .upstream-panel .proxy-tip{flex:none;margin-bottom:10px}
+#viewUpstreams .upstream-panel .proxy-search-row{flex:none;margin-bottom:12px}
+#viewUpstreams .upstream-panel .proxy-search-input{max-width:520px}
+#viewUpstreams .upstream-panel .test-result{flex:none;margin:0 0 12px}
+#viewUpstreams .upstream-panel .proxy-list{flex:1;min-height:0;overflow:auto;padding-right:4px}
 
 @media(max-width:760px){
   #viewConfig .content{padding:14px 16px 16px}
@@ -664,5 +667,6 @@ body.first-load .backup-item{animation:slideUp var(--dur) var(--ease-out) both}
   .dock-filter{max-width:none}
   .status-bar-actions{flex-wrap:wrap}
   #viewProxies .content{padding:14px 16px 16px}
-  #viewProxies .upstream-panel{height:clamp(200px,38%,360px);padding:12px 14px 14px}
+  #viewUpstreams .content{padding:14px 16px 16px}
+  #viewUpstreams .upstream-panel .proxy-search-input{max-width:none}
 }

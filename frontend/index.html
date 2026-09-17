@@ -85,6 +85,7 @@
         <div class="tabs-inner">
           <button class="tab active" id="tabConfig" type="button">配置文件</button>
           <button class="tab" id="tabProxies" type="button">代理管理</button>
+          <button class="tab" id="tabUpstreams" type="button">负载均衡</button>
         </div>
       </div>
 
@@ -188,7 +189,7 @@
       </section>
       </div><!-- /viewConfig -->
 
-      <!-- 代理管理视图（工作台布局：代理列表弹性占主体，upstream 停靠底部常驻，免长滚动） -->
+      <!-- 代理管理视图（工作台布局：代理列表弹性占主体，免长滚动） -->
       <div id="viewProxies" class="dashboard-body" hidden>
         <section class="content">
           <div class="panel proxy-panel">
@@ -213,8 +214,12 @@
             <div class="test-result" id="proxyTestResult" hidden></div>
             <div id="proxyList" class="proxy-list"><p class="muted">加载中…</p></div>
           </div>
+        </section>
+      </div><!-- /viewProxies -->
 
-          <!-- 负载均衡 upstream（底部停靠区，固定高度内部滚动） -->
+      <!-- 负载均衡视图（独立页签：upstream 列表弹性占主体，带搜索过滤） -->
+      <div id="viewUpstreams" class="dashboard-body" hidden>
+        <section class="content">
           <div class="panel upstream-panel">
             <div class="panel-title-row">
               <span class="panel-title">负载均衡 Upstream<span id="upstreamCount" class="panel-count"></span></span>
@@ -224,10 +229,16 @@
               </div>
             </div>
             <div class="proxy-tip muted small">upstream 写入 nginx.conf 的 http 块；代理目标填 <span class="mono">http://upstream名称</span> 即接入负载均衡；保存时自动备份并 nginx -t 校验</div>
+            <div class="proxy-search-row">
+              <input id="upstreamSearch" class="proxy-search-input" type="text" placeholder="🔍 按名称 / 服务器地址 / 引用代理搜索 upstream…" autocomplete="off">
+              <button id="btnClearUpstreamSearch" class="btn btn-mini" type="button" title="清除搜索" hidden>✕ 清除</button>
+            </div>
+            <!-- upstream 测试结果：置于列表上方，保存/删除后立即可见 -->
+            <div class="test-result" id="upstreamTestResult" hidden></div>
             <div id="upstreamList" class="proxy-list"><p class="muted">加载中…</p></div>
           </div>
         </section>
-      </div><!-- /viewProxies -->
+      </div><!-- /viewUpstreams -->
       </div><!-- /view-area -->
     </div>
   </div>

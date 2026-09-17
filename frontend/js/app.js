@@ -150,6 +150,21 @@ const App = (() => {
     $("#btnRefreshUpstreams").addEventListener("click", loadUpstreams);
     $("#btnAddUpstream").addEventListener("click", () => openUpstreamModal(null));
     $("#btnSaveUpstream").addEventListener("click", saveUpstream);
+    // upstream 搜索：与代理搜索同款 150ms 防抖过滤
+    const onUpstreamSearchInput = (e) => {
+      upstreamSearch = e.target.value;
+      renderUpstreamList(filterUpstreams());
+      $("#btnClearUpstreamSearch").hidden = !upstreamSearch.trim();
+      updateUpstreamCount();
+    };
+    $("#upstreamSearch").addEventListener("input", debounce(onUpstreamSearchInput, 150));
+    $("#btnClearUpstreamSearch").addEventListener("click", () => {
+      upstreamSearch = "";
+      $("#upstreamSearch").value = "";
+      $("#btnClearUpstreamSearch").hidden = true;
+      renderUpstreamList(filterUpstreams());
+      updateUpstreamCount();
+    });
     $("#btnUpstreamAddServer").addEventListener("click", () => {
       $("#upstreamServers").appendChild(buildUpstreamServerRow("", 1, false, false, []));
     });
@@ -164,6 +179,7 @@ const App = (() => {
     // 页签
     $("#tabConfig").addEventListener("click", () => switchTab("config"));
     $("#tabProxies").addEventListener("click", () => switchTab("proxies"));
+    $("#tabUpstreams").addEventListener("click", () => switchTab("upstreams"));
     // 代理
     $("#btnRefreshProxies").addEventListener("click", loadProxies);
     $("#btnAddProxy").addEventListener("click", openAddProxy);
@@ -217,15 +233,22 @@ const App = (() => {
   }
 
   /* ---------- 页签切换 ---------- */
+  const TAB_MAP = {
+    config:    { tab: "#tabConfig",    view: "#viewConfig" },
+    proxies:   { tab: "#tabProxies",   view: "#viewProxies" },
+    upstreams: { tab: "#tabUpstreams", view: "#viewUpstreams" },
+  };
+
   function switchTab(name) {
-    const isConfig = name === "config";
-    $("#tabConfig").classList.toggle("active", isConfig);
-    $("#tabProxies").classList.toggle("active", !isConfig);
-    $("#viewConfig").hidden = !isConfig;
-    $("#viewProxies").hidden = isConfig;
-    if (!isConfig) {
+    Object.entries(TAB_MAP).forEach(([key, ref]) => {
+      $(ref.tab).classList.toggle("active", key === name);
+      $(ref.view).hidden = key !== name;
+    });
+    if (name === "proxies") {
       loadPool();
       loadProxies();
+      loadUpstreams(); // 添加代理的目标候选（datalist）依赖 upstream 名称，保持同步
+    } else if (name === "upstreams") {
       loadUpstreams();
     }
   }
@@ -1154,13 +1177,22 @@ const App = (() => {
     }
   }
 
-  function showProxyTest(test) {
-    const el = $("#proxyTestResult");
+  /* 校验结果输出到指定视图的结果条（代理视图 / upstream 视图各自独立，互不遮挡） */
+  function showTestResultIn(sel, test) {
+    const el = $(sel);
     if (!test) { el.hidden = true; return; }
     el.textContent = test.output || "";
     el.className = "test-result " + (test.ok ? "ok" : "fail");
     el.hidden = false;
     appendJumpLink(el, test);
+  }
+
+  function showProxyTest(test) {
+    showTestResultIn("#proxyTestResult", test);
+  }
+
+  function showUpstreamTest(test) {
+    showTestResultIn("#upstreamTestResult", test);
   }
 
   function renderProxyList(proxies) {
@@ -1433,33 +1465,59 @@ const App = (() => {
   }
 
   /* ---------- 负载均衡 upstream ---------- */
-  let allUpstreams = [];
+  let allUpstreams = [];    // 全量 upstream 列表（搜索过滤用）
+  let upstreamSearch = "";  // 当前搜索关键词
   let editingUpstream = null; // null = 新建
 
   function upstreamMethodLabel(m) {
     return m === "least_conn" ? "least_conn" : m === "ip_hash" ? "ip_hash" : "轮询";
   }
 
+  /* 按名称 / 服务器地址 / 被引用代理过滤 */
+  function filterUpstreams() {
+    const kw = upstreamSearch.trim().toLowerCase();
+    if (!kw) return allUpstreams;
+    return allUpstreams.filter((u) => {
+      if (u.name && u.name.toLowerCase().includes(kw)) return true;
+      if ((u.servers || []).some((s) => s.address && s.address.toLowerCase().includes(kw))) return true;
+      return (u.usedBy || []).some((p) => p.toLowerCase().includes(kw));
+    });
+  }
+
+  /* 标题计数：搜索中显示「匹配/全量」，否则仅全量（空列表不显示） */
+  function updateUpstreamCount() {
+    const cnt = $("#upstreamCount");
+    if (!cnt) return;
+    if (!allUpstreams.length) { cnt.textContent = ""; return; }
+    cnt.textContent = upstreamSearch.trim()
+      ? `（${filterUpstreams().length}/${allUpstreams.length}）`
+      : `（${allUpstreams.length}）`;
+  }
+
   async function loadUpstreams() {
     try {
       const data = await api.upstreams();
       allUpstreams = data.upstreams || [];
-      $("#upstreamCount").textContent = allUpstreams.length ? "（" + allUpstreams.length + "）" : "";
-      renderUpstreamList();
+      updateUpstreamCount();
+      renderUpstreamList(filterUpstreams());
       renderTargetOptions();
     } catch (e) {
       $("#upstreamList").innerHTML = '<p class="muted">加载失败：' + escapeHtml(e.message) + "</p>";
     }
   }
 
-  function renderUpstreamList() {
+  function renderUpstreamList(upstreams) {
     const list = $("#upstreamList");
     if (!allUpstreams.length) {
       list.innerHTML = '<p class="muted">暂无 upstream；用于多台后端的负载均衡，代理目标填 http://名称 即可引用</p>';
       return;
     }
+    if (!upstreams.length) {
+      list.innerHTML = '<p class="muted">无匹配 upstream，换个关键词试试</p>';
+      return;
+    }
     list.innerHTML = "";
-    allUpstreams.forEach((u) => {
+    upstreams.forEach((u) => {
       const item = document.createElement("div");
       item.className = "proxy-item";
 
@@ -1618,7 +1676,7 @@ const App = (() => {
         : await api.addUpstream(name, method, servers);
       closeModal("#upstreamModal");
       unlockBody();
-      showProxyTest(res.test);
+      showUpstreamTest(res.test);
       markConfigDirty();
       toast("upstream 已保存，重载后生效", "success");
       loadUpstreams();
@@ -1633,7 +1691,7 @@ const App = (() => {
     if (!ok) return;
     try {
       const res = await api.removeUpstream(u.name);
-      showProxyTest(res.test);
+      showUpstreamTest(res.test);
       markConfigDirty();
       toast("已删除 upstream: " + u.name + "，重载后生效", "success");
       loadUpstreams();
