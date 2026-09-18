@@ -114,6 +114,60 @@ def ensure_data_dirs() -> dict:
     return {"root": root, "settingsFile": os.path.join(root, "settings.json"), "backups": backups}
 
 
+# ---------- 前端资源目录（exe 运行时持久化） ----------
+
+# 静态资源缺失的一次性告警开关（运行期间只打印一次，避免轮询刷屏）
+_static_missing_warned = False
+
+
+def _warn_static_missing(fp: str) -> None:
+    """静态资源读取失败时在控制台提示真实原因，便于现场排查。"""
+    global _static_missing_warned
+    if _static_missing_warned:
+        return
+    _static_missing_warned = True
+    print(f"[警告] 静态资源缺失: {fp}")
+    print(f"       前端目录: {FRONTEND_DIR}")
+    if IS_FROZEN:
+        print("       exe 正从解压临时目录读取前端资源，该目录可能已被系统/清理软件删除；"
+              "API 不受影响，仅页面 404。重启服务可临时恢复。")
+
+
+def stage_frontend(root: str) -> str:
+    """解析实际使用的前端资源目录。
+
+    源码运行：直接用项目根 frontend/。
+    exe 运行：onefile 的解压目录（%TEMP%\\_MEI*）可能在运行期间被磁盘清理/
+    存储感知/管家类软件删除（症状：API 正常但所有页面 404），故启动时把资源
+    复制到数据目录按版本持久保存，此后从副本提供静态文件；复制失败回退解压目录。
+    """
+    src = os.path.join(getattr(sys, "_MEIPASS", PROJECT_ROOT), "frontend")
+    if not IS_FROZEN:
+        return src
+    ver = Handler.server_version.split("/", 1)[-1]  # "nginx-manager/x.y.z" -> "x.y.z"
+    base = os.path.join(root, "frontend")
+    dst = os.path.join(base, f"v{ver}")
+    if os.path.isfile(os.path.join(dst, "index.html")):
+        return dst
+    try:
+        tmp = dst + ".tmp"
+        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.copytree(src, tmp)
+        shutil.rmtree(dst, ignore_errors=True)
+        os.replace(tmp, dst)
+        # 顺带清理旧版本目录与残留临时目录（只动 v* 与 *.tmp，不碰其他内容）
+        for name in os.listdir(base):
+            if name == os.path.basename(dst) or not (name.startswith("v") or name.endswith(".tmp")):
+                continue
+            stale = os.path.join(base, name)
+            if os.path.isdir(stale):
+                shutil.rmtree(stale, ignore_errors=True)
+        return dst
+    except OSError as e:
+        print(f"[警告] 前端资源持久化失败，回退解压目录: {e}")
+        return src
+
+
 # ---------- 单实例 ----------
 
 def _pid_alive(pid: int) -> bool:
@@ -502,6 +556,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         fp = os.path.join(FRONTEND_DIR, rel)
         if not os.path.isfile(fp):
+            _warn_static_missing(fp)
             self._err(404, "Not Found")
             return
         ctype = {
@@ -588,12 +643,14 @@ class Handler(BaseHTTPRequestHandler):
             self._err(404, "接口不存在")
 
     def _api_status(self) -> None:
+        frontend_ok = os.path.isfile(os.path.join(FRONTEND_DIR, "index.html"))
         if self.controller is None:
             self._ok({
                 "running": False, "version": None, "pid": None,
                 "nginxPath": self.settings.get("nginxPath"),
                 "confDir": self.settings.get("confDir"),
                 "confPath": None, "confFileExists": False,
+                "frontendOk": frontend_ok,
             })
             return
         with _status_lock:
@@ -615,6 +672,7 @@ class Handler(BaseHTTPRequestHandler):
                 }
                 _status_cache["data"] = data
                 _status_cache["ts"] = time.time()
+        data["frontendOk"] = frontend_ok  # 缓存外现算：资源健康度不受 15s TTL 影响
         self._ok(data)
 
     def _api_config(self) -> None:
@@ -1584,6 +1642,14 @@ def main() -> int:
     # 备份保留份数：settings 覆盖模块默认（0=不自动清理）
     global BACKUP_RETENTION
     BACKUP_RETENTION = int(Handler.settings.get("backupRetention", 7) or 7)
+
+    # exe 运行时把前端资源持久化到数据目录，避免 %TEMP% 解压目录被清理后页面 404
+    global FRONTEND_DIR
+    FRONTEND_DIR = stage_frontend(data_dirs["root"])
+    if os.path.isfile(os.path.join(FRONTEND_DIR, "index.html")):
+        print(f"[前端] 资源目录: {FRONTEND_DIR}")
+    else:
+        print(f"[警告] 前端资源缺失（{FRONTEND_DIR} 下无 index.html），页面将无法打开")
 
     # 单实例：若已有旧实例在运行，强制终止，以当前启动为准
     lock_path = os.path.join(data_dirs["root"], "instance.lock")

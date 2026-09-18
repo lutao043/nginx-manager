@@ -82,7 +82,8 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
   "nginxPath": "C:/nginx/nginx.exe",
   "confDir": "C:/nginx/conf",
   "confPath": "C:/nginx/conf/nginx.conf",
-  "confFileExists": true
+  "confFileExists": true,
+  "frontendOk": true
 }
 ```
 
@@ -90,6 +91,9 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 - `version`：`nginx -v` 输出解析；不可用时为 null。
 - `pid`：主进程 pid；不可用时为 null。
 - `confFileExists`：`confDir/nginx.conf` 是否存在。
+- `frontendOk`：manager 自身前端静态资源是否可用（`index.html` 可读；预览模式同样返回）。
+  exe 运行时若为 false，多为临时目录（解压资源）被清理软件删除所致——API 正常但页面 404，
+  v0.6.3 起启动时会把资源持久化到数据目录，正常情况不再出现。
 
 ### GET /api/config
 
