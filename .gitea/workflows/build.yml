@@ -47,11 +47,30 @@ jobs:
     needs: [build-macos, build-windows]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 生成发布说明需要完整历史与 tag
       - uses: actions/download-artifact@v4
+      - name: Prepare release notes
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [ -f "release-notes/$TAG.md" ]; then
+            # 优先使用仓库内维护的版本说明（release-notes/<tag>.md）
+            cp "release-notes/$TAG.md" RELEASE_NOTES.md
+          else
+            # 缺说明文件时回退：由提交记录生成（剔除 release: 提交）
+            PREV=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
+            if [ -n "$PREV" ]; then
+              git log "$PREV..$TAG" --no-merges --pretty=format:'- %s' | grep -v '^- release: ' > RELEASE_NOTES.md || true
+            else
+              git log "$TAG" --no-merges --pretty=format:'- %s' > RELEASE_NOTES.md
+            fi
+          fi
+          [ -s RELEASE_NOTES.md ] || echo "见提交记录" > RELEASE_NOTES.md
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             nginx-manager-macos/nginx-manager
             nginx-manager-windows/nginx-manager.exe
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md

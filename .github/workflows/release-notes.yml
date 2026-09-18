@@ -1,0 +1,33 @@
+name: Sync Release Notes
+
+# 把 release-notes/<tag>.md 的更新同步到已发布的 Release 页面。
+# 用于补写/修正已发布版本的更新说明（新版本发布时由 build.yml 直接带上说明）。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "release-notes/*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sync notes to existing releases
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for f in release-notes/v*.md; do
+            [ -e "$f" ] || continue
+            TAG=$(basename "$f" .md)
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "更新 $TAG 的发布说明"
+              gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$f"
+            else
+              echo "跳过 $TAG（尚无 Release）"
+            fi
+          done

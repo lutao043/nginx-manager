@@ -29,18 +29,42 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 生成发布说明需要完整历史与 tag
       - uses: actions/download-artifact@v4
         with:
           name: nginx-manager-windows
           path: ./windows
-      - name: Create Release and upload
+      - name: Prepare release notes
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [ -f "release-notes/$TAG.md" ]; then
+            # 优先使用仓库内维护的版本说明（release-notes/<tag>.md）
+            cp "release-notes/$TAG.md" RELEASE_NOTES.md
+          else
+            # 缺说明文件时回退：由提交记录生成（剔除 release: 提交）
+            PREV=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
+            if [ -n "$PREV" ]; then
+              git log "$PREV..$TAG" --no-merges --pretty=format:'- %s' | grep -v '^- release: ' > RELEASE_NOTES.md || true
+              printf '\n\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' "${{ github.repository }}" "$PREV" "$TAG" >> RELEASE_NOTES.md
+            else
+              git log "$TAG" --no-merges --pretty=format:'- %s' > RELEASE_NOTES.md
+            fi
+          fi
+      - name: Create or update Release and upload
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Find the exe file with version number
           EXE_FILE=$(ls windows/nginx-manager-v*.exe | head -1)
-          gh release create "${{ github.ref_name }}" \
-            --repo "${{ github.repository }}" \
-            --title "nginx-manager ${{ github.ref_name }}" \
-            --generate-notes \
-            "$EXE_FILE"
+          TAG="${{ github.ref_name }}"
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "${{ github.repository }}" --notes-file RELEASE_NOTES.md
+            gh release upload "$TAG" --repo "${{ github.repository }}" --clobber "$EXE_FILE"
+          else
+            gh release create "$TAG" \
+              --repo "${{ github.repository }}" \
+              --title "nginx-manager $TAG" \
+              --notes-file RELEASE_NOTES.md \
+              "$EXE_FILE"
+          fi
