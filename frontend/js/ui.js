@@ -155,14 +155,76 @@ function bindModalClose(id, onClose) {
   mask.addEventListener("click", (e) => { if (e.target === mask) close(); });
 }
 
-/* ── 主题切换 ── */
+/* ── 主题切换（4 配色 × 日夜，选择持久化到 localStorage(nm-theme)） ──
+   用弹层色板替代原生 select：主题是「看着选」的，色块比文字更快辨认。 */
 (function initThemeSwitcher() {
-  const sel = document.getElementById("themeSelect");
-  if (!sel) return;
-  const current = document.body.getAttribute("data-theme") || "emerald-dark";
-  sel.value = current;
-  sel.addEventListener("change", () => {
-    document.body.setAttribute("data-theme", sel.value);
-    localStorage.setItem("nm-theme", sel.value);
+  const btn = document.getElementById("btnTheme");
+  const pop = document.getElementById("themePopover");
+  if (!btn || !pop) return;
+
+  const GROUPS = [
+    { label: "夜间模式", items: [
+      { id: "emerald-dark",  name: "翡翠 · 夜", color: "#3ddc97" },
+      { id: "ocean-dark",    name: "海洋 · 夜", color: "#4d9ef5" },
+      { id: "amber-dark",    name: "琥珀 · 夜", color: "#f0a53c" },
+      { id: "rose-dark",     name: "玫瑰 · 夜", color: "#f4728c" },
+    ] },
+    { label: "日间模式", items: [
+      { id: "emerald-light", name: "翡翠 · 日", color: "#0a7f58" },
+      { id: "ocean-light",   name: "海洋 · 日", color: "#1f6feb" },
+      { id: "amber-light",   name: "琥珀 · 日", color: "#a9660a" },
+      { id: "rose-light",    name: "玫瑰 · 日", color: "#c21640" },
+    ] },
+  ];
+
+  GROUPS.forEach((g) => {
+    const group = document.createElement("div");
+    group.className = "theme-group";
+    const label = document.createElement("span");
+    label.className = "theme-group-label";
+    label.textContent = g.label;
+    group.appendChild(label);
+    g.items.forEach((t) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "theme-item";
+      item.dataset.theme = t.id;
+      const swatch = document.createElement("span");
+      swatch.className = "theme-swatch";
+      swatch.style.background = t.color;
+      const name = document.createElement("span");
+      name.textContent = t.name;
+      item.appendChild(swatch);
+      item.appendChild(name);
+      item.addEventListener("click", () => { applyTheme(t.id); closePicker(); });
+      group.appendChild(item);
+    });
+    pop.appendChild(group);
   });
+
+  const current = () => document.body.getAttribute("data-theme") || "emerald-dark";
+  function sync() {
+    Array.from(pop.querySelectorAll(".theme-item")).forEach((el) => {
+      el.classList.toggle("active", el.dataset.theme === current());
+    });
+  }
+  function applyTheme(id) {
+    document.body.setAttribute("data-theme", id);
+    localStorage.setItem("nm-theme", id);
+    sync();
+  }
+  function openPicker() { pop.hidden = false; btn.setAttribute("aria-expanded", "true"); sync(); }
+  function closePicker() { pop.hidden = true; btn.setAttribute("aria-expanded", "false"); }
+
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (pop.hidden) openPicker(); else closePicker();
+  });
+  document.addEventListener("click", (e) => {
+    if (!pop.hidden && !pop.contains(e.target)) closePicker();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !pop.hidden) closePicker();
+  });
+  applyTheme(current()); // 首次同步选中态（含从 localStorage 恢复的主题）
 })();

@@ -3,7 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>nginx 管理端</title>
+<title>nginx manager · 配置管理端</title>
+<!-- 内联 SVG 图标（data URI，零外部请求，同时消除 favicon 404） -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%233ddc97'/%3E%3Cg stroke='%2304140d' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M5 8h14M5 12h14M5 16h9'/%3E%3C/g%3E%3C/svg%3E">
 <!-- 离线环境运行：不引用任何外部资源，字体走系统回退栈（见 style.css --font* 变量） -->
 <link rel="stylesheet" href="css/style.css">
 </head>
@@ -15,36 +17,58 @@
     document.body.setAttribute('data-theme', t);
   })();
 </script>
+
+<!-- 内联图标集（无外部资源；<use> 引用，颜色继承 currentColor） -->
+<svg class="icon-sprite" aria-hidden="true" focusable="false">
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9M4 12h5M13 12h7"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/><circle cx="11" cy="12" r="2"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M4 7a1 1 0 0 1 1-1h4l2 2h8a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/></symbol>
+  <symbol id="i-palette" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18h1.5a1.8 1.8 0 0 0 0-3.6H13a1.8 1.8 0 0 1 0-3.6h4.2A3.8 3.8 0 0 0 21 10 7.5 7.5 0 0 0 12 3z"/><circle cx="8.5" cy="10" r="1.2"/><circle cx="12" cy="7.5" r="1.2"/><circle cx="15.5" cy="10" r="1.2"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8.5 5.2l9.6 6.8-9.6 6.8z"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/></symbol>
+  <symbol id="i-restart" viewBox="0 0 24 24"><path d="M12 4v7"/><path d="M7.5 6.6a7 7 0 1 0 9 0"/></symbol>
+  <symbol id="i-reload" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.66-5.66M20 12a8 8 0 0 1-13.66 5.66"/><path d="M18 3v4h-4M6 21v-4h4"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="M8 10l2.5 2L8 14M12.5 14.5H16"/></symbol>
+  <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4 20h4l10-10-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M10 7V4.5h4V7M6.5 7l.8 12.5h9.4L17.5 7"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4.5M12 17.5v.01"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 4l8 4.5-8 4.5-8-4.5z"/><path d="M4 13.5l8 4.5 8-4.5"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M15.5 15.5L20 20"/></symbol>
+</svg>
+
 <div id="app" class="layout">
 
-  <!-- 顶部栏 -->
+  <!-- 顶栏：品牌 + 主题 + 设置 -->
   <header class="topbar">
     <div class="brand">
-      <div class="logo">
+      <span class="logo" aria-hidden="true">
         <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round">
-          <path d="M4 7h16M4 12h16M4 17h10" stroke="white" opacity="0.9"/>
-          <circle cx="19" cy="17" r="2" fill="white" opacity="0.9"/>
+          <path d="M4 7h16M4 12h16M4 17h10" opacity=".95"/>
+          <circle cx="19" cy="17" r="2" fill="currentColor" stroke="none" opacity=".95"/>
         </svg>
-      </div>
-      <span class="brand-title">nginx manager</span>
+      </span>
+      <span class="brand-text">
+        <span class="brand-title">nginx manager</span>
+        <span class="brand-sub">配置管理端</span>
+      </span>
       <span id="statusBadge" class="badge badge-unknown">检测中…</span>
     </div>
     <div class="topbar-actions">
-      <select id="themeSelect" class="theme-select" title="切换主题">
-        <optgroup label="🌙 夜间模式">
-          <option value="emerald-dark">🌿 翡翠 · 夜</option>
-          <option value="ocean-dark">🌊 海洋 · 夜</option>
-          <option value="amber-dark">🔥 琥珀 · 夜</option>
-          <option value="rose-dark">🌸 玫瑰 · 夜</option>
-        </optgroup>
-        <optgroup label="☀️ 日间模式">
-          <option value="emerald-light">🌿 翡翠 · 日</option>
-          <option value="ocean-light">🌊 海洋 · 日</option>
-          <option value="amber-light">🔥 琥珀 · 日</option>
-          <option value="rose-light">🌸 玫瑰 · 日</option>
-        </optgroup>
-      </select>
-      <button id="btnSettings" class="btn btn-ghost" type="button">设置</button>
+      <div class="theme-picker">
+        <button id="btnTheme" class="btn btn-icon" type="button" aria-haspopup="true" aria-expanded="false"
+                title="切换主题（4 配色 × 日夜）" aria-label="切换主题">
+          <svg class="i"><use href="#i-palette"/></svg>
+        </button>
+        <div class="theme-popover" id="themePopover" hidden></div>
+      </div>
+      <button id="btnSettings" class="btn btn-icon" type="button" title="设置 nginx 路径、端口与数据目录" aria-label="设置">
+        <svg class="i"><use href="#i-settings"/></svg>
+      </button>
     </div>
   </header>
 
@@ -54,23 +78,23 @@
     <!-- 配置引导（未配置时显示） -->
     <section id="wizard" class="wizard" hidden>
       <div class="wizard-card">
-        <h2>首次使用，请配置 nginx</h2>
-        <p class="wizard-tip">启动程序时系统已弹出选择窗口；若未出现或想修改，可在此手动填写。</p>
+        <h2>先指定 nginx 的位置</h2>
+        <p class="wizard-tip">启动程序时已弹出系统选择窗口；若未出现或想修改，可在此手动填写。两项都填好后即可开始管理。</p>
         <div class="wizard-field">
-          <label>nginx 可执行文件</label>
+          <label for="wizNginxPath">nginx 可执行文件</label>
           <div class="path-row">
             <input id="wizNginxPath" type="text" placeholder="如 C:\nginx\nginx.exe" autocomplete="off">
             <button id="btnWizPickNginx" class="btn" type="button">浏览…</button>
           </div>
         </div>
         <div class="wizard-field">
-          <label>配置目录（含 nginx.conf）</label>
+          <label for="wizConfDir">配置目录（含 nginx.conf）</label>
           <div class="path-row">
             <input id="wizConfDir" type="text" placeholder="如 C:\nginx\conf" autocomplete="off">
             <button id="btnWizPickConfDir" class="btn" type="button">浏览…</button>
           </div>
         </div>
-        <div class="wizard-error" id="wizError" hidden></div>
+        <div class="callout callout-danger" id="wizError" hidden></div>
         <div class="wizard-actions">
           <button id="btnWizSave" class="btn btn-primary" type="button">保存并开始</button>
         </div>
@@ -80,204 +104,239 @@
     <!-- 主界面 -->
     <div id="dashboard" class="dashboard" hidden>
 
-      <!-- 页签 -->
-      <div class="tabs">
-        <div class="tabs-inner">
+      <!-- 工具条：视图页签 + 服务控制 -->
+      <div class="tabs-bar">
+        <div class="tabs">
           <button class="tab active" id="tabConfig" type="button">配置文件</button>
           <button class="tab" id="tabProxies" type="button">代理管理</button>
           <button class="tab" id="tabUpstreams" type="button">负载均衡</button>
         </div>
+        <div class="tabs-bar-actions">
+          <span id="reloadHint" class="push" hidden>配置已保存，尚未生效</span>
+          <button id="btnQuickReload" class="btn btn-primary btn-mini" type="button" title="重载 nginx 使已保存的修改生效" hidden>重载生效</button>
+          <div class="btn-group">
+            <button id="btnStart" class="btn btn-mini" type="button" title="启动 nginx">
+              <svg class="i i-fill"><use href="#i-play"/></svg>启动</button>
+            <button id="btnStop" class="btn btn-mini" type="button" title="优雅停止 nginx">
+              <svg class="i i-fill"><use href="#i-stop"/></svg>停止</button>
+            <button id="btnReload" class="btn btn-mini" type="button" title="重载配置（不中断连接）">
+              <svg class="i"><use href="#i-reload"/></svg>重载</button>
+            <button id="btnRestart" class="btn btn-mini" type="button" title="先优雅退出再启动（nginx 未运行时等同于启动）">
+              <svg class="i"><use href="#i-restart"/></svg>重启</button>
+          </div>
+          <button id="btnTest" class="btn btn-mini" type="button" title="执行 nginx -t 语法校验">
+            <svg class="i"><use href="#i-terminal"/></svg>nginx -t</button>
+        </div>
       </div>
 
-      <!-- 状态栏（通栏，固定在视图顶部，不随内容滚动） -->
+      <!-- 状态条（只读指标，不随内容滚动） -->
       <div class="status-bar">
         <div class="status-bar-grid">
-          <div class="status-bar-item"><span class="k">状态</span><span class="v" id="stRunning">—</span></div>
-          <div class="status-bar-item"><span class="k">版本</span><span class="v" id="stVersion">—</span></div>
-          <div class="status-bar-item"><span class="k">PID</span><span class="v" id="stPid">—</span></div>
-          <div class="status-bar-item"><span class="k">活跃连接</span><span class="v" id="stConn">—</span></div>
-          <div class="status-bar-item"><span class="k">请求</span><span class="v" id="stReq">—</span><button id="btnMetricsEnable" class="btn btn-mini" type="button" title="写入 stub_status 状态页配置（仅允许本机访问）" hidden>开启</button></div>
-          <div class="status-bar-item config-path"><span class="k">配置文件</span><span class="v mono" id="stConf">—</span></div>
+          <span class="stat"><span class="k">状态</span><span class="v" id="stRunning">—</span></span>
+          <span class="stat"><span class="k">版本</span><span class="v" id="stVersion">—</span></span>
+          <span class="stat"><span class="k">PID</span><span class="v" id="stPid">—</span></span>
+          <span class="stat"><span class="k">活跃连接</span><span class="v" id="stConn">—</span></span>
+          <span class="stat"><span class="k">请求</span><span class="v" id="stReq">—</span>
+            <button id="btnMetricsEnable" class="btn btn-mini" type="button" title="写入 stub_status 状态页配置（仅允许本机访问）" hidden>开启统计</button>
+          </span>
+          <span class="stat config-path"><span class="k">配置文件</span><span class="v mono" id="stConf">—</span></span>
         </div>
-        <div class="status-bar-actions">
-          <span id="reloadHint" class="reload-hint" hidden>● 配置已修改</span>
-          <button id="btnQuickReload" class="btn btn-mini btn-primary" type="button" title="重载 nginx 使已保存的修改生效" hidden>重载生效</button>
-          <button id="btnStart" class="btn btn-mini" type="button">启动</button>
-          <button id="btnStop" class="btn btn-mini" type="button">停止</button>
-          <button id="btnReload" class="btn btn-mini" type="button">重载</button>
-          <button id="btnRestart" class="btn btn-mini btn-primary" type="button" title="先优雅退出再启动（nginx 未运行时等同于启动）">重启</button>
-          <button id="btnTest" class="btn btn-mini" type="button">nginx -t</button>
-        </div>
-        <div class="test-result" id="testResult" hidden></div>
       </div>
+
+      <!-- nginx -t 结果（有输出时整条展示，便于阅读多行错误） -->
+      <div class="test-result" id="testResult" hidden></div>
 
       <!-- 视图区 -->
       <div class="view-area">
-      <!-- 配置文件视图 -->
-      <div id="viewConfig" class="dashboard-body">
-      <!-- 左侧：配置文件树 -->
-      <aside class="sidebar">
-        <div class="sidebar-head">
-          <span>配置文件</span>
-          <button id="btnRefreshTree" class="btn btn-mini" type="button" title="刷新">↻</button>
-        </div>
-        <nav id="fileTree" class="file-tree"></nav>
-      </aside>
 
-      <!-- 右侧：内容区（工作台布局：编辑器占据主体，备份/日志收纳到底部停靠页签） -->
-      <section class="content">
-
-        <!-- 编辑器 -->
-        <div class="panel editor-panel" hidden id="editorPanel">
-          <div class="panel-title-row">
-            <span class="panel-title mono" id="editorTitle">—</span>
-            <span class="editor-hint">Ctrl+S 保存 · 保存前可选备份并 nginx -t 校验</span>
-          </div>
-          <textarea id="editor" class="editor" spellcheck="false" wrap="off"></textarea>
-          <div class="editor-actions">
-            <span class="editor-meta" id="editorMeta"></span>
-            <button id="btnSave" class="btn btn-primary" type="button">保存</button>
-          </div>
-          <div class="editor-warning" id="saveWarning" hidden></div>
-        </div>
-
-        <!-- 空状态 -->
-        <div class="panel empty-panel" id="emptyPanel">
-          <p>从左侧选择要编辑的配置文件</p>
-          <p class="muted small">下方可查看配置备份、错误日志与访问日志</p>
-        </div>
-
-        <!-- 底部停靠区：备份 / 错误日志 / 访问日志 页签 -->
-        <div class="panel dock-panel" id="dockPanel">
-          <div class="dock-head">
-            <div class="dock-tabs-inner">
-              <button class="dock-tab active" id="dockTabBackups" type="button">配置备份<span id="backupCount" class="panel-count"></span></button>
-              <button class="dock-tab" id="dockTabErrorLog" type="button">错误日志</button>
-              <button class="dock-tab" id="dockTabAccessLog" type="button">访问日志</button>
+        <!-- 配置文件视图 -->
+        <div id="viewConfig" class="dashboard-body">
+          <!-- 左侧：配置文件树 -->
+          <aside class="sidebar">
+            <div class="sidebar-head">
+              <span>配置文件</span>
+              <button id="btnRefreshTree" class="btn btn-icon btn-mini" type="button" title="刷新文件树" aria-label="刷新文件树">
+                <svg class="i"><use href="#i-refresh"/></svg>
+              </button>
             </div>
-          </div>
+            <nav id="fileTree" class="file-tree" aria-label="配置文件树"></nav>
+          </aside>
 
-          <div class="dock-body" id="dockBackups">
-            <div class="dock-toolbar">
-              <span class="muted small" id="backupRetentionTip"></span>
-              <span class="dock-spacer"></span>
-              <button id="btnRefreshBackups" class="btn btn-mini" type="button" title="刷新">↻</button>
+          <!-- 右侧：编辑器 + 底部停靠区 -->
+          <section class="content">
+
+            <div class="panel editor-panel" hidden id="editorPanel">
+              <div class="panel-head">
+                <div class="panel-head-main">
+                  <svg class="i"><use href="#i-file"/></svg>
+                  <span class="panel-title mono" id="editorTitle">—</span>
+                </div>
+                <span class="hint"><kbd>Ctrl</kbd>+<kbd>S</kbd> 保存 · 保存前可选备份并校验</span>
+              </div>
+              <textarea id="editor" class="editor" spellcheck="false" wrap="off"></textarea>
+              <div class="panel-foot">
+                <span class="meta" id="editorMeta"></span>
+                <button id="btnSave" class="btn btn-primary" type="button">保存</button>
+              </div>
+              <div class="callout callout-warn" id="saveWarning" hidden></div>
             </div>
-            <div id="backupList" class="backup-list"><p class="muted">暂无备份</p></div>
-          </div>
 
-          <div class="dock-body" id="dockErrorLog" hidden>
-            <div class="dock-toolbar">
-              <span class="dock-path mono small" id="logPathLabel"></span>
-              <span class="dock-spacer"></span>
-              <button id="btnRefreshLog" class="btn btn-mini" type="button" title="刷新">↻</button>
+            <div class="panel empty-panel" id="emptyPanel">
+              <svg class="i empty-icon"><use href="#i-file"/></svg>
+              <p class="empty-title">从左侧选择一个配置文件开始编辑</p>
+              <p class="muted small">下方可查看配置备份、错误日志与访问日志</p>
             </div>
-            <pre id="errorLog" class="log-view">（点击刷新加载错误日志）</pre>
-          </div>
 
-          <div class="dock-body" id="dockAccessLog" hidden>
-            <div class="dock-toolbar">
-              <span class="dock-path mono small" id="accessLogPathLabel"></span>
-              <select id="accessLogPath" class="log-path-select" title="切换日志文件" hidden></select>
-              <input id="accessLogFilter" class="proxy-search-input dock-filter" type="text" placeholder="🔍 过滤访问日志…" autocomplete="off">
-              <button id="btnRefreshAccessLog" class="btn btn-mini" type="button" title="刷新">↻</button>
-            </div>
-            <pre id="accessLog" class="log-view">（点击刷新加载访问日志）</pre>
-          </div>
-        </div>
+            <!-- 底部停靠区：备份 / 错误日志 / 访问日志 -->
+            <div class="panel dock-panel" id="dockPanel">
+              <div class="dock-head">
+                <div class="dock-tabs">
+                  <button class="dock-tab active" id="dockTabBackups" type="button">配置备份<span id="backupCount" class="panel-count"></span></button>
+                  <button class="dock-tab" id="dockTabErrorLog" type="button">错误日志</button>
+                  <button class="dock-tab" id="dockTabAccessLog" type="button">访问日志</button>
+                </div>
+              </div>
 
-      </section>
-      </div><!-- /viewConfig -->
+              <div class="dock-body" id="dockBackups">
+                <div class="dock-toolbar">
+                  <span class="muted small" id="backupRetentionTip"></span>
+                  <span class="dock-spacer"></span>
+                  <button id="btnRefreshBackups" class="btn btn-icon btn-mini" type="button" title="刷新备份列表" aria-label="刷新备份列表">
+                    <svg class="i"><use href="#i-refresh"/></svg>
+                  </button>
+                </div>
+                <div id="backupList" class="backup-list"><p class="muted">暂无备份</p></div>
+              </div>
 
-      <!-- 代理管理视图（工作台布局：代理列表弹性占主体，免长滚动） -->
-      <div id="viewProxies" class="dashboard-body" hidden>
-        <section class="content">
-          <div class="panel proxy-panel">
-            <div class="panel-title-row">
-              <span class="panel-title">反向代理列表<span id="proxyCount" class="panel-count"></span></span>
-              <div class="panel-actions">
-                <button id="btnOpenPool" class="btn btn-mini" type="button" title="管理目标地址池">目标地址池<span id="poolCount" class="panel-count"></span></button>
-                <button id="btnRefreshProxies" class="btn btn-mini" type="button" title="刷新">↻</button>
-                <button id="btnAddProxy" class="btn btn-primary btn-mini" type="button">＋ 添加代理</button>
+              <div class="dock-body" id="dockErrorLog" hidden>
+                <div class="dock-toolbar">
+                  <span class="dock-path mono small" id="logPathLabel"></span>
+                  <span class="dock-spacer"></span>
+                  <button id="btnRefreshLog" class="btn btn-icon btn-mini" type="button" title="刷新错误日志" aria-label="刷新错误日志">
+                    <svg class="i"><use href="#i-refresh"/></svg>
+                  </button>
+                </div>
+                <pre id="errorLog" class="log-view">（点击刷新加载错误日志）</pre>
+              </div>
+
+              <div class="dock-body" id="dockAccessLog" hidden>
+                <div class="dock-toolbar">
+                  <span class="dock-path mono small" id="accessLogPathLabel"></span>
+                  <select id="accessLogPath" class="log-path-select" title="切换日志文件" hidden></select>
+                  <input id="accessLogFilter" class="input-search dock-filter" type="text" placeholder="过滤访问日志…" autocomplete="off">
+                  <button id="btnRefreshAccessLog" class="btn btn-icon btn-mini" type="button" title="刷新访问日志" aria-label="刷新访问日志">
+                    <svg class="i"><use href="#i-refresh"/></svg>
+                  </button>
+                </div>
+                <pre id="accessLog" class="log-view">（点击刷新加载访问日志）</pre>
               </div>
             </div>
-            <div class="proxy-tip muted small">
-              当前配置文件：<span id="confPathText" class="mono">加载中…</span>
-              <button id="btnChangeConf" class="btn btn-mini" type="button" title="查看/修改 nginx 路径与配置目录" style="margin-left:6px">更改</button>
-            </div>
-            <div class="proxy-tip muted small">切换目标地址后自动备份并执行 nginx -t 校验，通过后生效</div>
-            <div class="proxy-search-row">
-              <input id="proxySearch" class="proxy-search-input" type="text" placeholder="🔍 按路径 / 目标地址搜索代理…" autocomplete="off">
-              <button id="btnClearProxySearch" class="btn btn-mini" type="button" title="清除搜索" hidden>✕ 清除</button>
-            </div>
-            <!-- 代理测试结果：置于列表上方，操作后立即可见 -->
-            <div class="test-result" id="proxyTestResult" hidden></div>
-            <div id="proxyList" class="proxy-list"><p class="muted">加载中…</p></div>
-          </div>
-        </section>
-      </div><!-- /viewProxies -->
 
-      <!-- 负载均衡视图（独立页签：upstream 列表弹性占主体，带搜索过滤） -->
-      <div id="viewUpstreams" class="dashboard-body" hidden>
-        <section class="content">
-          <div class="panel upstream-panel">
-            <div class="panel-title-row">
-              <span class="panel-title">负载均衡 Upstream<span id="upstreamCount" class="panel-count"></span></span>
-              <div class="panel-actions">
-                <button id="btnRefreshUpstreams" class="btn btn-mini" type="button" title="刷新">↻</button>
-                <button id="btnAddUpstream" class="btn btn-primary btn-mini" type="button">＋ 新建 Upstream</button>
+          </section>
+        </div><!-- /viewConfig -->
+
+        <!-- 代理管理视图 -->
+        <div id="viewProxies" class="dashboard-body" hidden>
+          <section class="content">
+            <div class="panel proxy-panel">
+              <div class="panel-head">
+                <div class="panel-head-main">
+                  <svg class="i"><use href="#i-layers"/></svg>
+                  <span class="panel-title">反向代理<span id="proxyCount" class="panel-count"></span></span>
+                </div>
+                <div class="panel-actions">
+                  <button id="btnOpenPool" class="btn btn-mini" type="button" title="管理目标地址池">目标地址池<span id="poolCount" class="panel-count"></span></button>
+                  <button id="btnRefreshProxies" class="btn btn-icon btn-mini" type="button" title="刷新代理列表" aria-label="刷新代理列表">
+                    <svg class="i"><use href="#i-refresh"/></svg>
+                  </button>
+                  <button id="btnAddProxy" class="btn btn-primary btn-mini" type="button">
+                    <svg class="i"><use href="#i-plus"/></svg>添加代理</button>
+                </div>
               </div>
+              <div class="panel-sub">
+                <span>当前配置文件 <span id="confPathText" class="mono">加载中…</span></span>
+                <button id="btnChangeConf" class="btn btn-mini" type="button" title="查看/修改 nginx 路径与配置目录">更改</button>
+              </div>
+              <p class="panel-note">切换目标地址后自动备份并执行 nginx -t 校验，通过后生效</p>
+              <div class="search-row">
+                <svg class="i search-icon"><use href="#i-search"/></svg>
+                <input id="proxySearch" class="input-search" type="text" placeholder="按路径 / 目标地址搜索代理…" autocomplete="off">
+                <button id="btnClearProxySearch" class="btn btn-mini" type="button" title="清除搜索" hidden>清除</button>
+              </div>
+              <div class="test-result" id="proxyTestResult" hidden></div>
+              <div id="proxyList" class="proxy-list"><p class="muted">加载中…</p></div>
             </div>
-            <div class="proxy-tip muted small">upstream 写入 nginx.conf 的 http 块；代理目标填 <span class="mono">http://upstream名称</span> 即接入负载均衡；保存时自动备份并 nginx -t 校验</div>
-            <div class="proxy-search-row">
-              <input id="upstreamSearch" class="proxy-search-input" type="text" placeholder="🔍 按名称 / 服务器地址 / 引用代理搜索 upstream…" autocomplete="off">
-              <button id="btnClearUpstreamSearch" class="btn btn-mini" type="button" title="清除搜索" hidden>✕ 清除</button>
+          </section>
+        </div><!-- /viewProxies -->
+
+        <!-- 负载均衡视图 -->
+        <div id="viewUpstreams" class="dashboard-body" hidden>
+          <section class="content">
+            <div class="panel upstream-panel">
+              <div class="panel-head">
+                <div class="panel-head-main">
+                  <svg class="i"><use href="#i-layers"/></svg>
+                  <span class="panel-title">负载均衡 Upstream<span id="upstreamCount" class="panel-count"></span></span>
+                </div>
+                <div class="panel-actions">
+                  <button id="btnRefreshUpstreams" class="btn btn-icon btn-mini" type="button" title="刷新 upstream 列表" aria-label="刷新 upstream 列表">
+                    <svg class="i"><use href="#i-refresh"/></svg>
+                  </button>
+                  <button id="btnAddUpstream" class="btn btn-primary btn-mini" type="button">
+                    <svg class="i"><use href="#i-plus"/></svg>新建 Upstream</button>
+                </div>
+              </div>
+              <p class="panel-note">upstream 写入 nginx.conf 的 http 块；代理目标填 <span class="mono">http://upstream名称</span> 即接入负载均衡；保存时自动备份并 nginx -t 校验</p>
+              <div class="search-row">
+                <svg class="i search-icon"><use href="#i-search"/></svg>
+                <input id="upstreamSearch" class="input-search" type="text" placeholder="按名称 / 服务器地址 / 引用代理搜索 upstream…" autocomplete="off">
+                <button id="btnClearUpstreamSearch" class="btn btn-mini" type="button" title="清除搜索" hidden>清除</button>
+              </div>
+              <div class="test-result" id="upstreamTestResult" hidden></div>
+              <div id="upstreamList" class="proxy-list"><p class="muted">加载中…</p></div>
             </div>
-            <!-- upstream 测试结果：置于列表上方，保存/删除后立即可见 -->
-            <div class="test-result" id="upstreamTestResult" hidden></div>
-            <div id="upstreamList" class="proxy-list"><p class="muted">加载中…</p></div>
-          </div>
-        </section>
-      </div><!-- /viewUpstreams -->
+          </section>
+        </div><!-- /viewUpstreams -->
+
       </div><!-- /view-area -->
     </div>
   </div>
 
-  <!-- 目标地址池弹窗（代理列表头部按钮打开，免去长列表滚动） -->
+  <!-- 目标地址池弹窗 -->
   <div class="modal-mask" id="poolModal" hidden>
-    <div class="modal">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="目标地址池">
       <div class="modal-head">
         <span class="panel-title">目标地址池<span id="poolCountModal" class="panel-count"></span></span>
-        <button class="modal-close" type="button" aria-label="关闭" data-close>×</button>
+        <button class="modal-close" type="button" aria-label="关闭" data-close><svg class="i"><use href="#i-close"/></svg></button>
       </div>
       <div class="modal-body">
-        <div class="proxy-tip muted small">地址池即配置文件中全部 proxy_pass 目标（含注释备选）；添加/删除/别名会直接写入 nginx.conf 并自动校验</div>
+        <p class="modal-note">地址池即配置文件中全部 proxy_pass 目标（含注释备选）；添加/删除/别名会直接写入 nginx.conf 并自动校验</p>
         <div id="poolList" class="pool-list pool-list-modal"><p class="muted">加载中…</p></div>
       </div>
       <div class="modal-foot">
         <button class="btn" type="button" data-close>关闭</button>
-        <button class="btn btn-primary" id="btnAddPoolTarget" type="button">＋ 添加目标</button>
+        <button class="btn btn-primary" id="btnAddPoolTarget" type="button">添加目标</button>
       </div>
     </div>
   </div>
 
-  <!-- 添加池目标弹窗 -->
+  <!-- 添加池目标 / 编辑别名弹窗 -->
   <div class="modal-mask" id="addPoolModal" hidden>
-    <div class="modal">
+    <div class="modal modal-sm" role="dialog" aria-modal="true">
       <div class="modal-head">
         <span class="panel-title">添加目标地址</span>
-        <button class="modal-close" type="button" aria-label="关闭" data-close>×</button>
+        <button class="modal-close" type="button" aria-label="关闭" data-close><svg class="i"><use href="#i-close"/></svg></button>
       </div>
       <div class="modal-body">
-        <div class="wizard-field">
-          <label>目标地址（如 http://docker_balance 或 http://192.168.1.10:8080/）</label>
+        <div class="field">
+          <label for="addPoolTarget">目标地址（如 http://docker_balance 或 http://192.168.1.10:8080/）</label>
           <input id="addPoolTarget" type="text" placeholder="http://docker_balance" autocomplete="off">
         </div>
-        <div class="wizard-field">
-          <label>别名（可选，帮助记住用途，如「生产集群」「测试环境」）</label>
-          <input id="addPoolAlias" type="text" placeholder="生产Docker集群" autocomplete="off">
+        <div class="field">
+          <label for="addPoolAlias">别名（可选，帮助记住用途，如「生产集群」「测试环境」）</label>
+          <input id="addPoolAlias" type="text" placeholder="生产 Docker 集群" autocomplete="off">
         </div>
-        <div class="wizard-error" id="addPoolError" hidden></div>
+        <div class="callout callout-danger" id="addPoolError" hidden></div>
       </div>
       <div class="modal-foot">
         <button class="btn" type="button" data-close>取消</button>
@@ -288,23 +347,23 @@
 
   <!-- 添加代理弹窗 -->
   <div class="modal-mask" id="addProxyModal" hidden>
-    <div class="modal">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="添加代理">
       <div class="modal-head">
         <span class="panel-title">添加代理</span>
-        <button class="modal-close" type="button" aria-label="关闭" data-close>×</button>
+        <button class="modal-close" type="button" aria-label="关闭" data-close><svg class="i"><use href="#i-close"/></svg></button>
       </div>
       <div class="modal-body">
-        <div class="wizard-field">
-          <label>路径前缀（如 /xxxxWeb）</label>
+        <div class="field">
+          <label for="addProxyPath">路径前缀（如 /xxxxWeb）</label>
           <input id="addProxyPath" type="text" placeholder="/xxxxWeb" autocomplete="off">
         </div>
-        <div class="wizard-field">
-          <label>目标地址（如 http://192.168.1.10:8080/ 或 http://upstream名称）</label>
+        <div class="field">
+          <label for="addProxyTarget">目标地址（如 http://192.168.1.10:8080/ 或 http://upstream名称）</label>
           <input id="addProxyTarget" type="text" placeholder="http://192.168.1.10:8080/" autocomplete="off" list="proxyTargetOptions">
           <datalist id="proxyTargetOptions"></datalist>
         </div>
-        <div class="wizard-field">
-          <label>场景模板（决定附加的代理指令）</label>
+        <div class="field">
+          <label for="addProxyTemplate">场景模板（决定附加的代理指令）</label>
           <select id="addProxyTemplate">
             <option value="standard">标准 Web / API 反代</option>
             <option value="websocket">WebSocket（实时通信 / 前端热更新）</option>
@@ -312,7 +371,7 @@
             <option value="upload">大文件上传</option>
           </select>
         </div>
-        <div class="wizard-error" id="addProxyError" hidden></div>
+        <div class="callout callout-danger" id="addProxyError" hidden></div>
       </div>
       <div class="modal-foot">
         <button class="btn" type="button" data-close>取消</button>
@@ -323,15 +382,15 @@
 
   <!-- 编辑备选目标弹窗 -->
   <div class="modal-mask" id="editTargetsModal" hidden>
-    <div class="modal">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="编辑备选目标">
       <div class="modal-head">
         <span class="panel-title" id="editTargetsTitle">编辑备选目标</span>
-        <button class="modal-close" type="button" aria-label="关闭" data-close>×</button>
+        <button class="modal-close" type="button" aria-label="关闭" data-close><svg class="i"><use href="#i-close"/></svg></button>
       </div>
       <div class="modal-body">
-        <p class="wizard-tip">每行一个目标地址；勾选「激活」的在切换后生效。</p>
+        <p class="modal-note">每行一个目标地址；勾选「激活」的在切换后生效。</p>
         <div id="editTargetsList" class="targets-edit-list"></div>
-        <div class="wizard-error" id="editTargetsError" hidden></div>
+        <div class="callout callout-danger" id="editTargetsError" hidden></div>
       </div>
       <div class="modal-foot">
         <button class="btn" type="button" data-close>取消</button>
@@ -342,31 +401,32 @@
 
   <!-- 新建/编辑 upstream 弹窗 -->
   <div class="modal-mask" id="upstreamModal" hidden>
-    <div class="modal modal-lg">
+    <div class="modal modal-lg" role="dialog" aria-modal="true">
       <div class="modal-head">
         <span class="panel-title" id="upstreamModalTitle">新建 Upstream</span>
-        <button class="modal-close" type="button" aria-label="关闭" data-close>×</button>
+        <button class="modal-close" type="button" aria-label="关闭" data-close><svg class="i"><use href="#i-close"/></svg></button>
       </div>
       <div class="modal-body">
-        <div class="wizard-field">
-          <label>名称（代理目标填 http://名称 引用；创建后不可改名）</label>
+        <div class="field">
+          <label for="upstreamName">名称（代理目标填 http://名称 引用；创建后不可改名）</label>
           <input id="upstreamName" type="text" placeholder="docker_balance" autocomplete="off">
         </div>
-        <div class="wizard-field">
-          <label>调度算法</label>
+        <div class="field">
+          <label for="upstreamMethod">调度算法</label>
           <select id="upstreamMethod">
             <option value="round_robin">轮询（默认）</option>
             <option value="least_conn">least_conn（最少连接）</option>
             <option value="ip_hash">ip_hash（同 IP 固定后端）</option>
           </select>
         </div>
-        <div class="wizard-field">
-          <label>服务器列表</label>
+        <div class="field">
+          <span class="field-label">服务器列表</span>
           <div id="upstreamServers" class="targets-edit-list"></div>
-          <button id="btnUpstreamAddServer" class="btn btn-mini" type="button" style="margin-top:10px">＋ 添加服务器</button>
+          <button id="btnUpstreamAddServer" class="btn btn-mini btn-block" type="button">
+            <svg class="i"><use href="#i-plus"/></svg>添加服务器</button>
         </div>
-        <p class="wizard-tip">权重默认 1；勾选「备机」仅在其余服务器全部不可用时接管，勾选「下线」则不参与转发。保存将按规范形式重写整个 upstream 块。</p>
-        <div class="wizard-error" id="upstreamError" hidden></div>
+        <p class="modal-note">权重默认 1；勾选「备机」仅在其余服务器全部不可用时接管，勾选「下线」则不参与转发。保存将按规范形式重写整个 upstream 块。</p>
+        <div class="callout callout-danger" id="upstreamError" hidden></div>
       </div>
       <div class="modal-foot">
         <button class="btn" type="button" data-close>取消</button>
@@ -377,10 +437,10 @@
 
   <!-- 保存前 diff 预览弹窗 -->
   <div class="modal-mask" id="saveDiffModal" hidden>
-    <div class="modal modal-lg">
+    <div class="modal modal-lg" role="dialog" aria-modal="true" aria-label="保存前确认">
       <div class="modal-head">
-        <span class="panel-title">保存前确认 — 变更预览</span>
-        <button class="modal-close" type="button" aria-label="关闭" data-close>×</button>
+        <span class="panel-title">保存前确认 · 变更预览</span>
+        <button class="modal-close" type="button" aria-label="关闭" data-close><svg class="i"><use href="#i-close"/></svg></button>
       </div>
       <div class="modal-body">
         <pre id="saveDiffView" class="diff-view"></pre>
@@ -395,10 +455,10 @@
 
   <!-- 备份对比弹窗 -->
   <div class="modal-mask" id="backupDiffModal" hidden>
-    <div class="modal modal-lg">
+    <div class="modal modal-lg" role="dialog" aria-modal="true" aria-label="备份对比">
       <div class="modal-head">
         <span class="panel-title">备份对比</span>
-        <button class="modal-close" type="button" aria-label="关闭" data-close>×</button>
+        <button class="modal-close" type="button" aria-label="关闭" data-close><svg class="i"><use href="#i-close"/></svg></button>
       </div>
       <div class="modal-body">
         <div class="diff-select-row">
@@ -417,43 +477,45 @@
 
   <!-- 设置弹窗 -->
   <div class="modal-mask" id="settingsModal" hidden>
-    <div class="modal">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="设置">
       <div class="modal-head">
         <span class="panel-title">设置</span>
-        <button class="modal-close" id="btnCloseModal" type="button" aria-label="关闭" data-close>×</button>
+        <button class="modal-close" id="btnCloseModal" type="button" aria-label="关闭" data-close><svg class="i"><use href="#i-close"/></svg></button>
       </div>
       <div class="modal-body">
-        <div class="wizard-field">
-          <label>nginx 可执行文件</label>
+        <div class="field">
+          <label for="setNginxPath">nginx 可执行文件</label>
           <div class="path-row">
             <input id="setNginxPath" type="text" autocomplete="off">
             <button id="btnSetPickNginx" class="btn" type="button">浏览…</button>
           </div>
         </div>
-        <div class="wizard-field">
-          <label>配置目录（含 nginx.conf）</label>
+        <div class="field">
+          <label for="setConfDir">配置目录（含 nginx.conf）</label>
           <div class="path-row">
             <input id="setConfDir" type="text" autocomplete="off">
             <button id="btnSetPickConfDir" class="btn" type="button">浏览…</button>
           </div>
         </div>
-        <div class="wizard-field">
-          <label>自动保留备份份数（0 = 不自动清理）</label>
-          <input id="setBackupRetention" type="number" min="0" max="100" autocomplete="off">
+        <div class="field-row">
+          <div class="field">
+            <label for="setBackupRetention">自动保留备份份数</label>
+            <input id="setBackupRetention" type="number" min="0" max="100" autocomplete="off" placeholder="0 = 不清理">
+          </div>
+          <div class="field">
+            <label for="setPort">监听端口</label>
+            <input id="setPort" type="number" min="1" max="65535" autocomplete="off">
+          </div>
         </div>
-        <div class="wizard-field">
-          <label>监听端口（修改后服务自动重启）</label>
-          <input id="setPort" type="number" min="1" max="65535" autocomplete="off">
-        </div>
-        <div class="wizard-field">
-          <label>manager 数据目录（配置文件 settings.json 与备份的存放位置，修改后自动重启）</label>
+        <div class="field">
+          <label for="setDataDir">manager 数据目录（settings.json 与备份的存放位置）</label>
           <div class="path-row">
             <input id="setDataDir" type="text" autocomplete="off" spellcheck="false">
             <button id="btnSetPickDataDir" class="btn" type="button">浏览…</button>
           </div>
-          <div class="muted small" style="margin-top:4px">当前配置文件：<span id="settingsFileText" class="mono">—</span></div>
         </div>
-        <div class="wizard-error" id="setError" hidden></div>
+        <p class="modal-note">备份份数 0 = 不自动清理；端口与数据目录变更后服务会自动重启并打开新地址。当前配置文件：<span id="settingsFileText" class="mono">—</span></p>
+        <div class="callout callout-danger" id="setError" hidden></div>
       </div>
       <div class="modal-foot">
         <button class="btn" id="btnCancelModal" type="button" data-close>取消</button>
@@ -464,9 +526,9 @@
 
   <!-- 通用确认弹窗 -->
   <div class="modal-mask" id="confirmModal" hidden>
-    <div class="modal modal-sm">
+    <div class="modal modal-sm" role="dialog" aria-modal="true" aria-label="确认操作">
       <div class="modal-head"><span class="panel-title">确认操作</span></div>
-      <div class="modal-body"><p id="confirmText"></p></div>
+      <div class="modal-body"><p id="confirmText" class="confirm-text"></p></div>
       <div class="modal-foot">
         <button class="btn" id="btnConfirmNo" type="button">取消</button>
         <button class="btn btn-primary" id="btnConfirmYes" type="button">确认</button>

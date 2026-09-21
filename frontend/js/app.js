@@ -436,7 +436,9 @@ const App = (() => {
       }
       $("#stVersion").textContent = st.version || "—";
       $("#stPid").textContent = st.pid || "—";
-      $("#stConf").textContent = st.confPath || (preview ? "（预览模式）" : "—");
+      const confEl = $("#stConf");
+      confEl.textContent = st.confPath || (preview ? "（预览模式）" : "—");
+      confEl.title = st.confPath || ""; // 状态条中路径会被省略号截断，悬停可看全路径
       // 启停按钮随运行状态可用/禁用；restart 内部是先退再启，停止时也可用（等同启动）
       const running = !preview && !!st.running;
       $("#btnStart").disabled = preview || running;
@@ -544,6 +546,10 @@ const App = (() => {
     treeData.forEach((node) => nav.appendChild(renderTreeNode(node, 0)));
   }
 
+  /* 文件树图标：内联 SVG（复用 index.html 的 sprite，离线无外部资源） */
+  const TREE_ICON_DIR = '<svg class="i"><use href="#i-folder"/></svg>';
+  const TREE_ICON_FILE = '<svg class="i"><use href="#i-file"/></svg>';
+
   function renderTreeNode(node, depth) {
     const wrap = document.createElement("div");
     const isDir = node.isDir;
@@ -556,7 +562,7 @@ const App = (() => {
     arrow.textContent = isDir ? "▾" : "";
     const icon = document.createElement("span");
     icon.className = "icon";
-    icon.textContent = isDir ? "📁" : "📄";
+    icon.innerHTML = isDir ? TREE_ICON_DIR : TREE_ICON_FILE; // 静态字符串，不含用户数据
     const name = document.createElement("span");
     name.className = "name";
     name.textContent = node.name;
@@ -573,7 +579,18 @@ const App = (() => {
       wrap.appendChild(children);
     }
 
-    if (!isDir) {
+    if (isDir) {
+      // 目录可折叠：配置目录层级较深时，避免整棵树拉得很长
+      item.title = "展开 / 折叠";
+      item.setAttribute("aria-expanded", "true");
+      item.addEventListener("click", () => {
+        const kids = wrap.querySelector(".tree-children");
+        if (!kids) return;
+        kids.hidden = !kids.hidden;
+        arrow.textContent = kids.hidden ? "▸" : "▾";
+        item.setAttribute("aria-expanded", String(!kids.hidden));
+      });
+    } else {
       item.addEventListener("click", () => openFile(node.path));
     }
     return wrap;
@@ -699,7 +716,7 @@ const App = (() => {
       if (e.status === 409 && e.payload && e.payload.saved) {
         // 已保存但校验失败
         $("#saveWarning").hidden = false;
-        const backupLabel = e.payload.backupId ? "回滚到备份 " + e.payload.backupId : "回滚到备份";
+        const backupLabel = e.payload.backupId ? "回滚到 " + e.payload.backupId : "回滚到上一份备份";
         $("#saveWarning").innerHTML =
           "⚠ " + escapeHtml(e.message) +
           '<div class="actions"><button class="btn btn-mini" id="btnRollback">' + escapeHtml(backupLabel) + "</button></div>";
@@ -1076,13 +1093,13 @@ const App = (() => {
       const editBtn = document.createElement("button");
       editBtn.className = "pool-del";
       editBtn.type = "button";
-      editBtn.textContent = "✎";
+      editBtn.innerHTML = '<svg class="i"><use href="#i-pencil"/></svg>'; // 静态字符串，不含用户数据
       editBtn.title = "编辑别名";
       editBtn.addEventListener("click", () => openEditPoolAlias(item));
       const del = document.createElement("button");
       del.className = "pool-del";
       del.type = "button";
-      del.textContent = "×";
+      del.innerHTML = '<svg class="i"><use href="#i-trash"/></svg>';
       del.title = "删除";
       del.addEventListener("click", () => doRemovePoolTarget(t));
       chip.appendChild(label);
@@ -1274,7 +1291,7 @@ const App = (() => {
       btnEdit.addEventListener("click", () => openEditTargets(p));
 
       const btnDel = document.createElement("button");
-      btnDel.className = "btn btn-mini";
+      btnDel.className = "btn btn-mini btn-danger"; // 破坏性操作与备份列表的「删除」保持一致
       btnDel.textContent = "删除";
       btnDel.addEventListener("click", () => doRemoveProxy(p));
 
@@ -1568,7 +1585,7 @@ const App = (() => {
       btnEdit.textContent = "编辑";
       btnEdit.addEventListener("click", () => openUpstreamModal(u));
       const btnDel = document.createElement("button");
-      btnDel.className = "btn btn-mini";
+      btnDel.className = "btn btn-mini btn-danger";
       btnDel.textContent = "删除";
       btnDel.addEventListener("click", () => doRemoveUpstream(u));
       actions.appendChild(btnEdit);
