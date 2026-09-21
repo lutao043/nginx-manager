@@ -8,11 +8,11 @@
 |---|---|---|
 | 后端 | Python 标准库（http.server + subprocess） | 零第三方依赖，易打包，用户偏好 Python |
 | 前端 | 原生 HTML/CSS/JS，零构建零框架 | 可移植、无供应链风险 |
-| 主题 | 暗色护眼绿（CSS 变量） | 用户偏好 |
+| 主题 | 8 套（4 配色 × 日夜，CSS 变量；默认暗色护眼绿） | 用户偏好 |
 | 鉴权 | 无，仅绑定 127.0.0.1 | 用户决策：单机本机使用 |
-| 端口 | `--port` 指定，缺省随机空闲端口 | 用户决策 |
+| 端口 | `--port` 指定，缺省 `8310`（被占用时自动换随机空闲端口） | 用户决策 |
 | 打包 | PyInstaller 单文件 exe | 用户决策 |
-| 首次配置 | 启动时系统对话框选 nginx 路径 + 配置目录 | 用户决策（不做自动探测） |
+| 首次配置 | 启动时系统对话框选 nginx 路径 + 配置目录 | 用户决策（不做自动探测，仅探测工作区 `nginx-1.30.4/` 开发目录） |
 
 ## 目录结构
 
@@ -20,13 +20,16 @@
 ├── frontend/            # 原生前端（index.html + css/ + js/）
 ├── backend/
 │   ├── server.py        # HTTP 服务、路由、settings、备份
+│   ├── proxymgr.py      # nginx.conf 文本级解析与改写（代理/备选/地址池/upstream）
 │   └── nginxctl.py      # nginx 控制（三端适配层）
-├── tests/               # 测试源码（如后续补充）
+├── tests/               # 测试源码（标准库 unittest，真实服务子进程 + 真实 HTTP）
+├── scripts/             # 门禁脚本（dom_contract.py 等）
 ├── data/                # 运行时数据（gitignore；实际在用户数据目录）
 ├── API.md               # 契约唯一权威源 ★
 ├── SECURITY_AUDIT.md
 ├── ROADMAP.md           # 前端优化目标与 1.0 发布门槛（含实测基线）
 ├── VIBE_CODING_GUIDE.md # 本文件
+├── LICENSE              # MIT
 ├── build.py             # 一键打包
 └── nginx-manager.spec   # PyInstaller 配置
 ```
@@ -53,7 +56,8 @@
 
 ### 测试与验证
 - 测试源码放 `tests/`，产物 gitignore。
-- 本机验证以手动启动 `python backend/server.py` 为主；改动后跑 `py_compile` / `node --check` 语法校验。
+- 改动后：`uv run --python 3.13 --with pytest python -m pytest tests/ -q`（纯标准库 unittest 用例，pytest 只当跑测器）+ `python3 -m py_compile <改动的 py>` / `node --check <改动的 js>` + `python3 scripts/dom_contract.py`。
+- 用例一律走真实服务子进程 + 真实 HTTP（只把 nginx 换成 `tests/helpers.py` 里的替身脚本），断言真实响应与真实磁盘状态；不要 mock 掉自己的业务代码。
 - 大版本发布前询问用户是否需要跑测试，未获同意不跑。
 
 ### Git 提交纪律
@@ -62,7 +66,7 @@
 ### 路线图与发布门槛
 - 「页面优化到什么程度算完」与 1.0 硬性门槛以 [`ROADMAP.md`](ROADMAP.md) 为唯一判定依据；该文档含 v0.7.0 实测基线与可复现的验证命令。
 - 动手前先读它：判定当前阶段（保命补丁 / 测试基建 / 冻结候选 / 正式版）、确认要做的是哪条 G 项，并按「怎样验证进度」命令重新测量，不要凭印象宣称「已经现代化」。
-- **0.8.0 为功能冻结版**：测试基建阶段不新增任何功能。
+- **当前处于发布候选阶段**：G1–G6 已全部达标（见 ROADMAP 第三节），只做发布前验证与缺陷修复，不再新增功能；新的功能想法记进 ROADMAP 而不是直接写代码。
 - 完成某条门槛后同步更新 ROADMAP 的勾选状态与实测基线表数字。
 
 ## 启动 / 构建命令
@@ -78,7 +82,7 @@ python backend/server.py --port 8080
 python backend/server.py --nginx-path C:/nginx/nginx.exe --conf-dir C:/nginx/conf
 
 # 打包单文件 exe
-python build.py          # 产物 dist/nginx-manager.exe
+python build.py          # 产物 dist/nginx-manager-v{版本}.exe
 ```
 
 ## 端口与 nginx 反向代理
@@ -105,6 +109,8 @@ server {
 
 ## 本地测试用 nginx
 
-- 工作区根目录 `nginx-1.30.4/` 为本地测试用 nginx（Windows 官方版，含 nginx.exe + conf/）。
-- 开发模式启动时自动识别并作为默认管理对象（见 `server.py::find_workspace_nginx`）。
+- 工作区根目录 `nginx-1.30.4/` 为本地测试用 nginx，两种布局都支持自动识别（`server.py::find_workspace_nginx`）：
+  - Windows 官方版：`nginx-1.30.4/nginx.exe` + `conf/`；
+  - Unix 源码构建：`nginx-1.30.4/sbin/nginx`（`./configure && make` 产物）+ `conf/`。
+- 开发模式启动时自动识别并作为默认管理对象。
 - **该目录已在 .gitignore 中排除，不入库**；仅用于本地功能验证。

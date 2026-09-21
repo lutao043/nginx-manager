@@ -12,7 +12,7 @@ Lightweight web-based nginx manager · Zero third-party dependencies · Ready-to
 
 ## Features
 
-- **Config file management**: tree view + online editing; the original file is backed up automatically before saving and validated with `nginx -t`, with one-click rollback on failure
+- **Config file management**: tree view + online editing; changes are previewed as a local diff before saving, saving offers "save with backup / save only", then the result is validated with `nginx -t`, with one-click rollback on failure
 - **Reverse proxy management**: visually switch `proxy_pass` targets (multiple candidates, aliases, search by path/address); changes are written directly to nginx.conf and validated automatically
 - **Target address pool**: manages all proxy_pass targets in one place; equivalent spellings (case/default port/trailing slash) are deduplicated automatically
 - **System picker dialogs**: a native dialog selects nginx on first launch; every path input in the UI has a "Browse…" button — no manual typing, no typos

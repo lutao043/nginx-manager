@@ -5,11 +5,11 @@
 
 ## 通用约定
 
-- Base URL：`http://127.0.0.1:<port>`，端口由启动参数 `--port` 指定，缺省随机空闲端口。
+- Base URL：`http://127.0.0.1:<port>`，端口由启动参数 `--port` 指定，缺省 `8310`（该端口被占用时自动改用随机空闲端口）。
 - 请求/响应体均为 JSON（`Content-Type: application/json`），UTF-8。
 - 时间字段：`yyyy-MM-dd HH:mm:ss`（本地时区），内部比较用 ISO 字符串。
 - 错误响应统一：`{ "error": "<中文错误描述>", "detail": "<可选的补充信息>" }`，配合非 2xx 状态码。
-- 状态码：`200` 成功；`400` 参数错误；`404` 资源不存在；`409` 操作冲突（如校验失败拒绝保存）；`500` 服务端错误。
+- 状态码：`200` 成功；`400` 参数错误；`403` 安全拒绝（缺 `X-Requested-With` 头的跨站写请求、路径越出配置/日志目录）；`404` 资源不存在；`409` 操作冲突（如校验失败拒绝保存、目标被引用）；`500` 服务端错误；`501` 当前环境不支持该操作（如无图形界面时弹系统选择框）。
 - 前端所有用户可见文案用中文；本文档中的英文 key 为程序内唯一标识，不可翻译。
 
 ## 启动参数与运行模式
@@ -269,7 +269,7 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 **成功响应 200**
 
 ```json
-{ "ok": true, "deleted": "20260804_193000", "backups": [ ...剩余列表... ] }
+{ "ok": true, "deleted": "20260804_193000", "backups": [ ...剩余列表... ], "retention": 7 }
 ```
 
 **错误**
@@ -294,8 +294,10 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 **成功响应 200**
 
 ```json
-{ "ok": true, "restored": ["nginx.conf"] }
+{ "ok": true, "restored": ["nginx.conf"], "test": { "ok": true, "output": "..." }, "preBackupIds": ["20260916_120000"] }
 ```
+
+- `preBackupIds`：回滚前先给当前文件自动建的「反悔快照」备份 id（可能为空数组）；`test`：回滚后再次 `nginx -t` 的结果。
 
 **错误**
 - `400`：id 缺失或非法（路径穿越）。
@@ -561,7 +563,7 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 **成功响应 200**
 
 ```json
-{ "ok": true, "proxy": { "path": "/xxxxWeb", "active": "http://192.168.1.10:8080/", "targets": ["http://192.168.1.10:8080/"], "proxyHeaders": true }, "test": { "ok": true, "output": "..." } }
+{ "ok": true, "proxy": { "path": "/xxxxWeb", "active": "http://192.168.1.10:8080/", "targets": ["http://192.168.1.10:8080/"], "proxyHeaders": true }, "backupId": "20260916_120000", "test": { "ok": true, "output": "..." } }
 ```
 
 **错误**
@@ -583,7 +585,7 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 **成功响应 200**
 
 ```json
-{ "ok": true, "proxy": { "path": "/xxxxWeb", "active": "http://192.168.1.11:8080/", "targets": ["http://192.168.1.10:8080/", "http://192.168.1.11:8080/"], "proxyHeaders": true }, "test": { "ok": true, "output": "..." } }
+{ "ok": true, "proxy": { "path": "/xxxxWeb", "active": "http://192.168.1.11:8080/", "targets": ["http://192.168.1.10:8080/", "http://192.168.1.11:8080/"], "proxyHeaders": true }, "backupId": "20260916_120000", "test": { "ok": true, "output": "..." } }
 ```
 
 **错误**
@@ -594,24 +596,26 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 
 ### PUT /api/proxies/targets
 
-更新某代理的备选目标列表（增删备选，激活目标不变；若移除当前激活目标则自动切换到列表第一个）。修改后自动备份 + 校验。
+更新某代理的备选目标列表（增删备选）。修改后自动备份 + 校验。
 
 **请求体**
 
 ```json
-{ "path": "/xxxxWeb", "targets": ["http://192.168.1.10:8080/", "http://192.168.1.11:8080/", "http://192.168.1.12:8080/"] }
+{ "path": "/xxxxWeb", "targets": ["http://192.168.1.10:8080/", "http://192.168.1.11:8080/", "http://192.168.1.12:8080/"], "active": "http://192.168.1.11:8080/" }
 ```
+
+- `active`（可选）：指定哪一条作为激活目标（对应前端备选列表里的单选）。不传则保持原激活目标；原激活目标已不在 `targets` 中、或 `active` 不在 `targets` 中时，自动取列表第一条。列表中其余条目写为 `#proxy_pass` 注释行。
 
 **成功响应 200**
 
 ```json
-{ "ok": true, "proxy": { "path": "/xxxxWeb", "active": "...", "targets": ["..."], "proxyHeaders": true }, "test": { "ok": true, "output": "..." } }
+{ "ok": true, "path": "/xxxxWeb", "proxy": { "path": "/xxxxWeb", "active": "http://192.168.1.11:8080/", "targets": ["..."], "proxyHeaders": true }, "active": "http://192.168.1.11:8080/", "targets": ["..."], "backupId": "20260916_120000", "test": { "ok": true, "output": "..." } }
 ```
 
 **错误**
 - `400`：path/targets 缺失、targets 为空或含非法 URL。
 - `404`：path 对应的代理不存在。
-- `409`：校验失败（已回滚）。
+- `409`：校验失败（已回滚）；代理为单行写法（无法安全改写）。
 
 ### DELETE /api/proxies
 
@@ -626,7 +630,7 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 **成功响应 200**
 
 ```json
-{ "ok": true, "deleted": "/xxxxWeb", "test": { "ok": true, "output": "..." } }
+{ "ok": true, "deleted": "/xxxxWeb", "proxy": null, "backupId": "20260916_120000", "test": { "ok": true, "output": "..." } }
 ```
 
 **错误**
@@ -798,7 +802,7 @@ weight=1 / 非备份 / 非下线等默认值会省略；调度算法仅支持 `r
 **成功响应 200**
 
 ```json
-{ "ok": true, "upstreams": [ ... 全量列表 ... ], "backupId": "20260916_120000", "test": { "ok": true, "output": "..." } }
+{ "ok": true, "upstreams": [ ... 全量列表 ... ], "name": "docker_balance", "backupId": "20260916_120000", "test": { "ok": true, "output": "..." } }
 ```
 
 **错误**
@@ -809,14 +813,22 @@ weight=1 / 非备份 / 非下线等默认值会省略；调度算法仅支持 `r
 
 更新 upstream（按 name 定位整块重写，name 不可变更）。
 
-**请求体 / 响应 / 错误**：同 POST；name 不存在返回 `404`。
+**请求体**：同 POST。
+
+**成功响应 200**
+
+```json
+{ "ok": true, "upstreams": [ ... 全量列表 ... ], "name": "docker_balance", "backupId": "20260916_120000", "test": { "ok": true, "output": "..." } }
+```
+
+**错误**：`400` 请求体非法；`404` name 不存在；`409` 校验失败（已回滚）。
 
 ### DELETE /api/upstreams
 
 删除 upstream。若有代理目标（激活或备选）指向该 upstream，返回 `409` 并提示先切换或删除对应代理。
 
 **请求体**：`{ "name": "docker_balance" }`
-**成功响应 200**：`{ "ok": true, "upstreams": [ ... ], "backupId": "...", "test": { ... } }`
+**成功响应 200**：`{ "ok": true, "upstreams": [ ... ], "deleted": "docker_balance", "backupId": "...", "test": { ... } }`
 **错误**：`404` 不存在；`409` 被代理引用 / 校验失败（已回滚）。
 
 ## 前端行为约定
