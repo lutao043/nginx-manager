@@ -25,6 +25,9 @@ nginx-1.30.4/
 .vscode/
 version_info.py
 
+# macOS
+.DS_Store
+
 # AOCI agent host integration (machine-bound; do not commit)
 .mcp.json
 .mcp.json.backup.*
