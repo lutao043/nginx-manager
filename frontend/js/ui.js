@@ -33,8 +33,15 @@ function announce(msg) {
   setTimeout(() => { live.textContent = msg; }, 30);
 }
 
-/* 确认弹窗：返回 Promise<boolean>（Esc/取消/点遮罩均视为否） */
+/* 确认弹窗：返回 Promise<boolean>（Esc/取消/点遮罩均视为否）
+   重入保护：同一时刻只允许一个确认弹窗。已有确认在等用户输入时，新的请求直接返回
+   false——共用同一个 DOM，两个 Promise 同时挂监听会互相抢按钮与 Esc，先完成的那次
+   还会把后一次的监听留成孤儿。 */
+let confirmBusy = false;
+
 function confirmDialog(text) {
+  if (confirmBusy) return Promise.resolve(false);
+  confirmBusy = true;
   return new Promise((resolve) => {
     const mask = $("#confirmModal");
     const yesBtn = $("#btnConfirmYes");
@@ -49,6 +56,7 @@ function confirmDialog(text) {
       noBtn.removeEventListener("click", onNo);
       mask.removeEventListener("click", onMask);
       document.removeEventListener("keydown", onKey);
+      confirmBusy = false;
       resolve(val);
     };
     const onYes = () => done(true);
@@ -66,6 +74,8 @@ function confirmDialog(text) {
 /* 多选项确认弹窗：options = [{label, value, primary?}]，返回 Promise<value|null>
    点遮罩/取消/Esc 返回 null。用同一 confirmModal，动态重建按钮。 */
 function confirmChoice(text, options) {
+  if (confirmBusy) return Promise.resolve(null);
+  confirmBusy = true;
   return new Promise((resolve) => {
     const mask = $("#confirmModal");
     const foot = mask.querySelector(".modal-foot");
@@ -96,6 +106,7 @@ function confirmChoice(text, options) {
       foot.appendChild(yes);
       mask.removeEventListener("click", onMask);
       document.removeEventListener("keydown", onKey);
+      confirmBusy = false;
       resolve(val);
     };
     const onMask = (e) => { if (e.target === mask) done(null); };
@@ -198,7 +209,12 @@ document.addEventListener("keydown", (e) => {
   if (!top) return;
   const closer = top.querySelector("[data-close]");
   if (closer) closer.click(); // 走统一关闭流程（含 onClose 回调）
-  else { top.hidden = true; modalStack.pop(); }
+  else {
+    // 没有 data-close 的弹层也要走完整关闭流程：直接 hidden 会漏掉 inert 还原、
+    // 焦点回位与 body 滚动解锁（解锁漏掉后整页再也滚不动）
+    closeModal("#" + top.id);
+    unlockBody();
+  }
 });
 
 /* 按键锁定（弹窗打开时锁 body 滚动，计数支持嵌套弹窗） */
@@ -268,12 +284,16 @@ function bindModalClose(id, onClose) {
   });
 
   const current = () => document.body.getAttribute("data-theme") || "emerald-dark";
+  const THEME_IDS = GROUPS.reduce((acc, g) => acc.concat(g.items.map((i) => i.id)), []);
   function sync() {
     Array.from(pop.querySelectorAll(".theme-item")).forEach((el) => {
       el.classList.toggle("active", el.dataset.theme === current());
     });
   }
   function applyTheme(id) {
+    // 白名单：只有色板里存在的主题才落到 data-theme。任意字符串会让所有
+    // [data-theme="..."]/[data-theme*=...] 规则都不命中，整页变量失效（配色全丢）
+    if (THEME_IDS.indexOf(id) === -1) id = "emerald-dark";
     document.body.setAttribute("data-theme", id);
     localStorage.setItem("nm-theme", id);
     sync();

@@ -49,6 +49,25 @@
   --scheme:light;
 }
 
+/* 兜底：data-theme 缺失/取值未知时（手改 localStorage、旧版本主题名、或将来新增主题漏写规则），
+   退回默认主题的完整令牌，避免 --bg/--text-* 全部未定义导致整页无样式。
+   只有 <body> 带 data-theme，具体主题规则在 body 上覆盖本块，8 套主题不受影响。 */
+:root{
+  --bg:#0a0d0c; --bg-panel:#111614; --bg-raised:#171d1a; --bg-sunken:#070908; --bg-hover:#1a211e;
+  --border:#1e2724; --border-strong:#2c3934; --border-hover:#3d4c45;
+  --accent:#3ddc97; --accent-hi:#5fe8ad; --accent-fg:#04140d;
+  --accent-soft:rgba(61,220,151,.12); --accent-line:rgba(61,220,151,.34); --accent-ring:rgba(61,220,151,.24);
+  --text-1:#e9eeeb; --text-2:#a3b1aa; --text-3:#838f88; --text-4:#73817a;
+  --ok:#35d192; --ok-soft:rgba(53,209,146,.12); --ok-line:rgba(53,209,146,.30);
+  --warn:#e0b23c; --warn-soft:rgba(224,178,60,.12); --warn-line:rgba(224,178,60,.30);
+  --danger:#f0735f; --danger-soft:rgba(240,115,95,.12); --danger-line:rgba(240,115,95,.32);
+  --info:#5aa9f0; --info-soft:rgba(90,169,240,.12); --info-line:rgba(90,169,240,.30);
+  --shadow-1:0 1px 2px rgba(0,0,0,.5);
+  --shadow-2:0 24px 56px -16px rgba(0,0,0,.8),0 0 0 1px rgba(255,255,255,.03);
+  --scrim:rgba(4,7,6,.62);
+  --scheme:dark;
+}
+
 /* ── 主题配色：4 色 × 日夜（中性表面 + 单一强调色）── */
 
 /* 翡翠 · 夜 */

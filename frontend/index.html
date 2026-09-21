@@ -12,8 +12,13 @@
 <body class="first-load">
 <script>
   // 立即应用保存的主题，避免闪烁（必须在 <body> 之后，此时 document.body 已存在）
+  // 白名单：localStorage 里可能是旧版主题名或被手改过的垃圾值，直接写进 data-theme
+  // 会让所有主题规则都不命中（--bg/--text-* 全部未定义，页面等于无样式）
   (function(){
-    var t = localStorage.getItem('nm-theme') || 'emerald-dark';
+    var THEMES = ['emerald-dark','ocean-dark','amber-dark','rose-dark',
+                  'emerald-light','ocean-light','amber-light','rose-light'];
+    var t = localStorage.getItem('nm-theme');
+    if (THEMES.indexOf(t) === -1) t = 'emerald-dark';
     document.body.setAttribute('data-theme', t);
   })();
 </script>
@@ -326,9 +331,9 @@
 
   <!-- 添加池目标 / 编辑别名弹窗 -->
   <div class="modal-mask" id="addPoolModal" hidden>
-    <div class="modal modal-sm" role="dialog" aria-modal="true">
+    <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="addPoolModalTitle">
       <div class="modal-head">
-        <span class="panel-title">添加目标地址</span>
+        <span class="panel-title" id="addPoolModalTitle">添加目标地址</span>
         <button class="modal-close" type="button" aria-label="关闭" data-close><svg class="i"><use href="#i-close"/></svg></button>
       </div>
       <div class="modal-body">
@@ -405,7 +410,7 @@
 
   <!-- 新建/编辑 upstream 弹窗 -->
   <div class="modal-mask" id="upstreamModal" hidden>
-    <div class="modal modal-lg" role="dialog" aria-modal="true">
+    <div class="modal modal-lg" role="dialog" aria-modal="true" aria-labelledby="upstreamModalTitle">
       <div class="modal-head">
         <span class="panel-title" id="upstreamModalTitle">新建 Upstream</span>
         <button class="modal-close" type="button" aria-label="关闭" data-close><svg class="i"><use href="#i-close"/></svg></button>

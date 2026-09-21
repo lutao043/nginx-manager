@@ -248,7 +248,7 @@ const App = (() => {
     upstreams: { tab: "#tabUpstreams", view: "#viewUpstreams" },
   };
 
-  function switchTab(name) {
+  async function switchTab(name) {
     Object.entries(TAB_MAP).forEach(([key, ref]) => {
       const active = key === name;
       const tab = $(ref.tab);
@@ -257,12 +257,14 @@ const App = (() => {
       tab.tabIndex = active ? 0 : -1;   // roving tabindex：整组只留一个 Tab 停靠点
       $(ref.view).hidden = !active;
     });
+    // 按依赖顺序串行加载：代理列表的标签要用地址池别名、目标候选要用 upstream 名称，
+    // 并发加载时先返回的那个会拿着旧状态渲染（别名/候选缺一块，要等下次刷新才对）
     if (name === "proxies") {
-      loadPool();
-      loadProxies();
-      loadUpstreams(); // 添加代理的目标候选（datalist）依赖 upstream 名称，保持同步
+      await loadPool();
+      await loadUpstreams(); // 添加代理的目标候选（datalist）依赖 upstream 名称，保持同步
+      await loadProxies();
     } else if (name === "upstreams") {
-      loadUpstreams();
+      await loadUpstreams();
     }
   }
 
@@ -436,12 +438,15 @@ const App = (() => {
     }
   }
 
-  /* 轮询等待服务就绪（最多 maxSeconds 秒） */
+  /* 轮询等待服务就绪（最多 maxSeconds 秒）。
+     改端口/改数据目录后重启时，新地址与本页不同源 —— CORS 模式下 fetch 会直接抛错，
+     永远等不到「就绪」而白等满 40 秒；no-cors 拿到的 opaque 响应读不到内容，但足以证明
+     该端口已在监听（连接被拒时才抛错）。 */
   async function waitForServer(url, maxSeconds) {
     for (let i = 0; i < maxSeconds * 2; i++) {
       try {
-        const r = await fetch(url + "api/status");
-        if (r.ok) return true;
+        await fetch(url + "api/status", { mode: "no-cors", cache: "no-store" });
+        return true;
       } catch (e) { /* 未就绪，继续等 */ }
       await new Promise((res) => setTimeout(res, 500));
     }
@@ -863,17 +868,25 @@ const App = (() => {
   }
 
   /* ---------- 文件编辑 ---------- */
-  /* focusEditorFromKeyboard：由文件树的键盘激活传入（点击不需要抢焦点） */
-  async function openFile(path, focusEditorFromKeyboard) {
-    if (editing) {
+  /* focusEditorFromKeyboard：由文件树的键盘激活传入（点击不需要抢焦点）
+     force：跳过「放弃修改」确认并强制从磁盘重读（回滚/恢复后用，此时编辑器内容已过期）
+     请求代次 openFileSeq：快速连点两个文件时，先发的响应可能后到，若不丢弃就会
+     出现「编辑器显示 A、currentFile 是 B」——接下来保存会把 A 的内容写进 B。 */
+  let openFileSeq = 0;
+
+  async function openFile(path, focusEditorFromKeyboard, force) {
+    if (editing && !force) {
       const ok = await confirmDialog("当前文件有未保存的修改，放弃修改并切换文件？");
       if (!ok) return;
       editing = false;
     }
+    const seq = ++openFileSeq;
     currentFile = path;
+    if (force) editing = false;
     renderTree(); // 高亮
     try {
       const data = await api.readFile(path);
+      if (seq !== openFileSeq) return; // 已被更晚的 openFile 取代：丢弃本次结果
       originalContent = data.content;
       $("#editor").value = data.content;
       $("#editor").scrollTop = 0; // 打开新文件回到顶部，避免残留上次滚动位置
@@ -889,6 +902,7 @@ const App = (() => {
       if (focusEditorFromKeyboard) $("#editor").focus();
       $("#saveWarning").hidden = true;
     } catch (e) {
+      if (seq !== openFileSeq) return; // 旧请求的失败不该弹给用户（当前文件已切换）
       toast(e.message, "error");
     }
   }
@@ -932,12 +946,31 @@ const App = (() => {
       if (e.status === 409 && e.payload && e.payload.saved) {
         // 已保存但校验失败
         $("#saveWarning").hidden = false;
-        const backupLabel = e.payload.backupId ? "回滚到 " + e.payload.backupId : "回滚到上一份备份";
+        // 未启用备份时 backupId 为空：此时按钮若不给动作就是死按钮，
+        // 改为回滚到最新一份备份（确认框里会写明具体是哪一份）；一份备份都没有就不显示按钮。
+        let rollbackId = e.payload.backupId || null;
+        if (!rollbackId) {
+          try {
+            const data = await api.backups();
+            const items = (data && data.backups) || [];
+            if (items.length) {
+              const newest = items.slice().sort((a, b) => String(b.id).localeCompare(String(a.id)))[0];
+              rollbackId = newest && newest.id;
+            }
+          } catch (_) { /* 取不到备份列表就不提供回滚入口 */ }
+        }
+        const backupLabel = rollbackId ? "回滚到 " + rollbackId : "";
         $("#saveWarning").innerHTML =
-          "⚠ " + escapeHtml(e.message) +
-          '<div class="actions"><button class="btn btn-mini" id="btnRollback">' + escapeHtml(backupLabel) + "</button></div>";
+          "⚠ 配置已保存，但未通过 nginx -t 校验，尚未生效。" +
+          (rollbackId
+            ? ""
+            : '<div class="muted">未启用备份，无法一键回滚：可在下方「备份」页签查看已有备份，或手工修正后重试。</div>') +
+          (backupLabel
+            ? '<div class="actions"><button class="btn btn-mini" id="btnRollback">' +
+              escapeHtml(backupLabel) + "</button></div>"
+            : "");
         const rb = $("#btnRollback");
-        if (rb && e.payload.backupId) rb.addEventListener("click", () => rollbackFile(e.payload.backupId));
+        if (rb && rollbackId) rb.addEventListener("click", () => rollbackFile(rollbackId));
         showTestResult(e.payload.test);
         editing = false;
         originalContent = content;
@@ -965,7 +998,7 @@ const App = (() => {
       highlightLine(0);
       toast("已回滚，正在重新加载…", "success");
       await loadTree();
-      if (currentFile) openFile(currentFile);
+      if (currentFile) openFile(currentFile, false, true); // force：强制重读回滚后的磁盘内容
       loadBackups();
     } catch (e) {
       toast(e.message, "error");
@@ -1125,7 +1158,9 @@ const App = (() => {
       toast("回滚成功", "success");
       showTestResult(res.test);
       await loadTree();
-      if (currentFile) openFile(currentFile);
+      // force：编辑器内容已过期（磁盘被回滚），必须强制重读；
+      // 否则「放弃修改？」确认里的取消会让编辑器留着旧内容，随后保存会静默覆盖刚回滚的配置
+      if (currentFile) openFile(currentFile, false, true);
       loadBackups();
     } catch (e) {
       toast(e.message, "error");
@@ -1262,7 +1297,7 @@ const App = (() => {
       renderPoolList();
     } catch (e) {
       poolTargets = [];
-      $("#poolList").innerHTML = '<p class="muted">加载失败</p>';
+      $("#poolList").innerHTML = '<p class="muted">加载失败：' + escapeHtml(e.message) + "</p>";
     }
     renderPoolCount();
     renderTargetOptions();
@@ -1638,25 +1673,29 @@ const App = (() => {
     $("#editTargetsTitle").textContent = "编辑备选目标 — " + p.path;
     const list = $("#editTargetsList");
     list.innerHTML = "";
-    (p.targets || []).forEach((t, i) => {
-      list.appendChild(buildTargetRow(t, t === p.active, i === 0));
+    (p.targets || []).forEach((t) => {
+      list.appendChild(buildTargetRow(t, t === p.active));
     });
     $("#editTargetsError").hidden = true;
     lockBody();
     openModal("#editTargetsModal");
   }
 
-  function buildTargetRow(value, isActive, isFirst) {
+  function buildTargetRow(value, isActive) {
     const row = document.createElement("div");
     row.className = "targets-edit-row";
     const radio = document.createElement("input");
     radio.type = "radio";
     radio.name = "activeTarget";
     radio.checked = !!isActive;
+    // 单选没有可见文字标签，补读屏名与悬停说明（保存后即成为配置文件里未注释的那行）
+    radio.setAttribute("aria-label", "设为激活目标");
+    radio.title = "设为激活目标（保存后为生效的那一行）";
     const input = document.createElement("input");
     input.type = "text";
     input.value = value;
     input.placeholder = "http://host:port/";
+    input.setAttribute("aria-label", "目标地址");
     const del = document.createElement("button");
     del.className = "btn-remove-row";
     del.type = "button";
@@ -1674,14 +1713,16 @@ const App = (() => {
     if (inPreviewGuard("编辑备选目标")) return;
     const rows = Array.from($$("#editTargetsList .targets-edit-row"));
     const targets = [];
-    let activeIdx = 0;
-    rows.forEach((row, i) => {
+    let active = "";
+    rows.forEach((row) => {
       const input = row.querySelector('input[type="text"]');
       const radio = row.querySelector('input[type="radio"]');
       const val = (input.value || "").trim();
       if (val && !targets.includes(val)) {
         targets.push(val);
-        if (radio.checked) activeIdx = targets.indexOf(val);
+        // 单选按钮选中的那行即新的激活目标：必须随请求发给后端，
+        // 否则「选中的目标」只在界面上生效，保存后配置里还是原来的激活行
+        if (radio.checked) active = val;
       }
     });
     if (!targets.length) {
@@ -1689,8 +1730,9 @@ const App = (() => {
       $("#editTargetsError").hidden = false;
       return;
     }
+    if (!active) active = targets[0];
     try {
-      const res = await api.saveProxyTargets(editingProxy.path, targets);
+      const res = await api.saveProxyTargets(editingProxy.path, targets, active);
       closeModal("#editTargetsModal");
       unlockBody();
       showProxyTest(res.test);

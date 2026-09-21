@@ -94,7 +94,9 @@ const api = {
   proxies() { return this.get("/api/proxies"); },
   addProxy(path, target, template) { return this.post("/api/proxies", { path, target, template }); },
   switchProxy(path, target) { return this.put("/api/proxies/switch", { path, target }); },
-  saveProxyTargets(path, targets) { return this.put("/api/proxies/targets", { path, targets }); },
+  saveProxyTargets(path, targets, active) {
+    return this.put("/api/proxies/targets", { path, targets, active });
+  },
   removeProxy(path) { return this._request("DELETE", "/api/proxies", { path }); },
 
   // ---- 目标地址池 ----
