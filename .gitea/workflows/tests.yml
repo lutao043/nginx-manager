@@ -1,0 +1,42 @@
+# Gitea Actions — 测试门禁
+# 触发：任意分支推送与 PR（tag 推送交给 build.yml 发布，不在这里重复跑）
+# 与 .github/workflows/tests.yml 保持一致
+
+name: Tests
+
+on:
+  push:
+    branches: ["**"]
+    tags-ignore: ["v*.*.*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install pytest
+        run: python -m pip install --upgrade pip pytest
+
+      # 服务以真实子进程启动、nginx 用 POSIX 替身，无需安装 nginx
+      - name: Backend tests
+        run: python -m pytest tests/ -q
+
+      # 与上面等价的标准库入口（后端零第三方依赖：不装 pytest 也应能跑）
+      - name: Backend tests (stdlib entry point)
+        run: python -m unittest discover -s tests -t .
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Frontend syntax check
+        run: |
+          for f in frontend/js/*.js; do node --check "$f"; done
