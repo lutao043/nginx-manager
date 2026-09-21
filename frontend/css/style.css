@@ -396,17 +396,35 @@ select:focus{border-color:var(--accent);box-shadow:var(--ring)}
 .tree-item.active .icon{color:var(--accent)}
 .tree-item .name{overflow:hidden;text-overflow:ellipsis}
 
-/* 编辑器 */
+/* 编辑器：行号栏与文本区共用一层边框（焦点环落在 .editor-wrap 上） */
 .editor-panel{flex:1 1 auto;display:flex;flex-direction:column;min-height:0}
-.editor{
-  width:100%;flex:1 1 auto;min-height:150px;resize:none;padding:12px 14px;
-  font-family:var(--mono);font-size:var(--fs-sm);line-height:20px;tab-size:4;
-  color:var(--text-1);background:var(--bg-sunken);
-  border:1px solid var(--border-strong);border-radius:var(--r-md);
-  white-space:pre;overflow:auto;
+.editor-wrap{
+  position:relative;flex:1 1 auto;display:flex;min-height:150px;min-width:0;
+  background:var(--bg-sunken);border:1px solid var(--border-strong);border-radius:var(--r-md);
+  overflow:hidden;
   transition:border-color var(--t) var(--ease),box-shadow var(--t) var(--ease);
 }
-.editor:focus{border-color:var(--accent);box-shadow:var(--ring)}
+.editor-wrap:focus-within{border-color:var(--accent);box-shadow:var(--ring)}
+/* 行号栏：与文本区同字号同行高（20px）；宽度由 JS 按行数位数用 ch 设置 */
+.editor-gutter{
+  flex:none;width:calc(2ch + 18px);padding:12px 8px 0 6px;
+  font-family:var(--mono);font-size:var(--fs-sm);line-height:20px;
+  text-align:right;color:var(--text-4);background:var(--bg-panel);
+  border-right:1px solid var(--border);
+  overflow:hidden;user-select:none;white-space:pre;
+}
+.editor{
+  width:100%;flex:1 1 auto;min-height:0;min-width:0;resize:none;padding:12px 14px;
+  font-family:var(--mono);font-size:var(--fs-sm);line-height:20px;tab-size:4;
+  color:var(--text-1);background:transparent;
+  border:0;border-radius:0;outline:none;
+  white-space:pre;overflow:auto;
+}
+/* 校验错误行高亮：跳到第 N 行时给该行铺一层底（不遮挡文本与选择） */
+.editor-line-hl{
+  position:absolute;left:0;right:0;height:20px;pointer-events:none;
+  background:var(--danger-soft);border-left:2px solid var(--danger);
+}
 
 /* 空状态 */
 .empty-panel{

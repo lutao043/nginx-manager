@@ -90,10 +90,14 @@ class NginxController:
         ok = code == 0 and "successful" in output
         result = {"ok": ok, "output": output}
         if code != 0:
-            # Windows 盘符路径含 ':'，用非贪婪匹配 + 行尾 :数字 锚定到最后一个 行号
-            m = re.search(r"in\s+(.+?):(\d+)\s*$", output)
-            if m:
-                result["errFile"] = m.group(1)
+            # nginx -t 失败输出常为多行：先是 [alert] 提示，中间才是含出错位置的一行，
+            # 末尾还有 "configuration file ... test failed" 汇总；故逐行匹配取最后一次命中。
+            # Windows 盘符路径含 ':'，用非贪婪匹配 + 行尾 :数字 锚定到行号。
+            for line in output.splitlines():
+                m = re.search(r"in\s+(.+?):(\d+)\s*$", line)
+                if not m:
+                    continue
+                result["errFile"] = m.group(1).strip()
                 try:
                     result["errLine"] = int(m.group(2))
                 except ValueError:

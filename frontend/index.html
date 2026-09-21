@@ -171,9 +171,13 @@
                   <svg class="i"><use href="#i-file"/></svg>
                   <span class="panel-title mono" id="editorTitle">—</span>
                 </div>
-                <span class="hint"><kbd>Ctrl</kbd>+<kbd>S</kbd> 保存 · 保存前可选备份并校验</span>
+                <span class="hint"><kbd>Ctrl</kbd>+<kbd>S</kbd> 保存 · <kbd>Ctrl</kbd>+<kbd>Z</kbd> 撤销 · <kbd>Ctrl</kbd>+<kbd>Y</kbd> 重做</span>
               </div>
-              <textarea id="editor" class="editor" spellcheck="false" wrap="off"></textarea>
+              <div class="editor-wrap">
+                <div class="editor-gutter" id="editorGutter" aria-hidden="true"></div>
+                <textarea id="editor" class="editor" spellcheck="false" wrap="off" aria-label="配置文件内容"></textarea>
+                <div class="editor-line-hl" id="editorLineHl" hidden></div>
+              </div>
               <div class="panel-foot">
                 <span class="meta" id="editorMeta"></span>
                 <button id="btnSave" class="btn btn-primary" type="button">保存</button>

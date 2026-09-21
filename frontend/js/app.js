@@ -127,12 +127,18 @@ const App = (() => {
     // 编辑器
     $("#btnSave").addEventListener("click", saveFile);
     $("#editor").addEventListener("input", () => {
-      editing = true;
+      editing = $("#editor").value !== originalContent;
+      historyRecord(true);
+      renderGutter();
+      highlightLine(0);   // 内容已变，上次的错误行定位失效
       updateCaret();
     });
     $("#editor").addEventListener("keyup", updateCaret);
     $("#editor").addEventListener("click", updateCaret);
     $("#editor").addEventListener("keydown", editorKeydown);
+    // 行号栏与错误行高亮随编辑区滚动同步
+    $("#editor").addEventListener("scroll", () => { syncGutterScroll(); updateLineHighlight(); });
+    window.addEventListener("resize", () => { renderGutter(); updateLineHighlight(); });
     // 有未保存修改时拦截页面刷新/关闭，防误触丢失
     window.addEventListener("beforeunload", (e) => {
       if (!editing) return;
@@ -608,11 +614,131 @@ const App = (() => {
     $("#editorMeta").textContent = (editing ? "● 有未保存的修改 · " : "") + caret;
   }
 
+  /* ---------- 编辑器行号栏 ---------- */
+  const EDITOR_LINE_H = 20;    // 与 .editor / .editor-gutter 的 line-height 一致
+  const EDITOR_PAD_TOP = 12;   // 与 .editor / .editor-gutter 的 padding-top 一致
+
+  function renderGutter() {
+    const ed = $("#editor"), gutter = $("#editorGutter");
+    if (!ed || !gutter || $("#editorPanel").hidden) return;
+    const lines = ed.value.split("\n").length;
+    // 只在行数变化时重建内容（每次输入全量重写行号是低端机掉帧源）
+    if (gutter.dataset.lines !== String(lines)) {
+      gutter.dataset.lines = String(lines);
+      let out = "";
+      for (let i = 1; i <= lines; i++) out += i + "\n";
+      gutter.textContent = out;
+    }
+    const digits = String(lines).length;
+    if (gutter.dataset.digits !== String(digits)) {
+      gutter.dataset.digits = String(digits);
+      gutter.style.width = "calc(" + digits + "ch + 18px)";  // 宽度随行号位数伸缩
+    }
+    syncGutterScroll();
+  }
+
+  function syncGutterScroll() {
+    const ed = $("#editor"), gutter = $("#editorGutter");
+    if (ed && gutter) gutter.scrollTop = ed.scrollTop;
+  }
+
+  /* ---------- 校验错误行高亮（与「跳转到第 N 行」联动） ---------- */
+  let highlightedLine = 0;   // 0 = 无高亮
+
+  function highlightLine(n) {
+    highlightedLine = n || 0;
+    updateLineHighlight();
+  }
+
+  function updateLineHighlight() {
+    const ed = $("#editor"), hl = $("#editorLineHl"), gutter = $("#editorGutter");
+    if (!ed || !hl || !gutter) return;
+    if (!highlightedLine || $("#editorPanel").hidden) { hl.hidden = true; return; }
+    const top = EDITOR_PAD_TOP + (highlightedLine - 1) * EDITOR_LINE_H - ed.scrollTop;
+    // 完全滚出可视区即收起（部分可见时仍显示）
+    if (top + EDITOR_LINE_H <= 0 || top >= ed.clientHeight) { hl.hidden = true; return; }
+    hl.hidden = false;
+    hl.style.top = top + "px";
+    hl.style.left = gutter.offsetWidth + "px";
+  }
+
+  /* ---------- 撤销 / 重做 ----------
+     程序化写入 textarea.value（Tab 缩进、打开文件、格式化）会清空浏览器原生撤销栈，
+     故自建快照历史；连续输入按时间窗合并成一步，撤销一次回到这段输入之前。 */
+  const HISTORY_LIMIT = 300;
+  const HISTORY_MERGE_MS = 600;
+
+  let historyStack = [];
+  let historyIndex = -1;
+  let historyStamp = 0;
+
+  function historyReset() {
+    const ed = $("#editor");
+    historyStack = [{ v: ed.value, ss: ed.selectionStart, se: ed.selectionEnd }];
+    historyIndex = 0;
+    historyStamp = 0;
+  }
+
+  function historyRecord(typing) {
+    const ed = $("#editor");
+    const cur = { v: ed.value, ss: ed.selectionStart, se: ed.selectionEnd };
+    const top = historyStack[historyIndex];
+    const now = Date.now();
+    if (typing && top && historyIndex === historyStack.length - 1 && now - historyStamp < HISTORY_MERGE_MS) {
+      historyStack[historyIndex] = cur;   // 合并连续输入
+      historyStamp = now;
+      return;
+    }
+    if (top && top.v === cur.v && top.ss === cur.ss && top.se === cur.se) return;  // 无变化不记步
+    historyStack = historyStack.slice(0, historyIndex + 1);  // 新改动丢弃重做分支
+    historyStack.push(cur);
+    if (historyStack.length > HISTORY_LIMIT) historyStack.shift();
+    historyIndex = historyStack.length - 1;
+    historyStamp = now;
+  }
+
+  function historyApply(entry) {
+    const ed = $("#editor");
+    ed.value = entry.v;
+    ed.setSelectionRange(entry.ss, entry.se);
+    editing = ed.value !== originalContent;
+    renderGutter();
+    highlightLine(0);   // 撤销后行号已变，旧定位失效
+    updateCaret();
+  }
+
+  function historyUndo() {
+    if (historyIndex <= 0) return false;
+    historyIndex -= 1;
+    historyApply(historyStack[historyIndex]);
+    return true;
+  }
+
+  function historyRedo() {
+    if (historyIndex >= historyStack.length - 1) return false;
+    historyIndex += 1;
+    historyApply(historyStack[historyIndex]);
+    return true;
+  }
+
   function editorKeydown(e) {
     // Ctrl/Cmd+S 保存（走保存前 diff 预览流程）
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === "s" || e.key === "S")) {
       e.preventDefault();
       saveFile();
+      return;
+    }
+    const mod = e.ctrlKey || e.metaKey;
+    // Ctrl/Cmd+Z 撤销、Ctrl/Cmd+Shift+Z 重做（macOS 习惯）
+    if (mod && !e.altKey && (e.key === "z" || e.key === "Z")) {
+      e.preventDefault();
+      if (e.shiftKey) historyRedo(); else historyUndo();
+      return;
+    }
+    // Ctrl+Y 重做（Windows 习惯）
+    if (mod && !e.shiftKey && !e.altKey && (e.key === "y" || e.key === "Y")) {
+      e.preventDefault();
+      historyRedo();
       return;
     }
     // Tab 缩进 / Shift+Tab 反缩进（默认行为是跳出编辑器，编辑配置时很反人类）
@@ -632,7 +758,9 @@ const App = (() => {
       if (outdent) return;
       ed.value = value.slice(0, start) + unit + value.slice(end);
       ed.selectionStart = ed.selectionEnd = start + unit.length;
-      editing = true;
+      editing = ed.value !== originalContent;
+      historyRecord(false);
+      renderGutter();
       updateCaret();
       return;
     }
@@ -649,7 +777,9 @@ const App = (() => {
     // 重新选中缩进后的整块，便于连续操作
     ed.selectionStart = lineStart;
     ed.selectionEnd = lineStart + joined.length;
-    editing = true;
+    editing = ed.value !== originalContent;
+    historyRecord(false);
+    renderGutter();
     updateCaret();
   }
 
@@ -671,6 +801,9 @@ const App = (() => {
       $("#editorPanel").hidden = false;
       $("#emptyPanel").hidden = true;
       editing = false;
+      historyReset();
+      renderGutter();
+      highlightLine(0);
       updateCaret();
       $("#saveWarning").hidden = true;
     } catch (e) {
@@ -741,8 +874,12 @@ const App = (() => {
     const ok = await confirmDialog("将当前配置回滚到备份 " + backupId + "？");
     if (!ok) return;
     try {
-      await api.restoreBackup(backupId);
+      const res = await api.restoreBackup(backupId);
       markConfigDirty();
+      // 已回滚：失败的警告条与错误行定位同时失效，换成回滚后的校验结果
+      $("#saveWarning").hidden = true;
+      showTestResult(res && res.test);
+      highlightLine(0);
       toast("已回滚，正在重新加载…", "success");
       await loadTree();
       if (currentFile) openFile(currentFile);
@@ -781,7 +918,7 @@ const App = (() => {
     el.appendChild(btn);
   }
 
-  /* 编辑器定位到指定行：选中该行并滚动到可视区 */
+  /* 编辑器定位到指定行：选中该行、滚动到可视区（尽量居中）并高亮 —— 与 nginx -t 的 errLine 联动 */
   function jumpToLine(n) {
     const ed = $("#editor");
     const lines = ed.value.split("\n");
@@ -789,8 +926,12 @@ const App = (() => {
     for (let i = 0; i < n - 1 && i < lines.length; i++) pos += lines[i].length + 1;
     ed.focus();
     ed.setSelectionRange(pos, pos + (lines[n - 1] || "").length);
-    const lh = parseFloat(getComputedStyle(ed).lineHeight) || 22;
-    ed.scrollTop = Math.max(0, (n - 8) * lh);
+    const lh = parseFloat(getComputedStyle(ed).lineHeight) || EDITOR_LINE_H;
+    // 编辑区可能只有几行高（窄窗口），把目标行放到视口中间，行号栏与高亮才对得上
+    const lineTop = EDITOR_PAD_TOP + (n - 1) * lh;
+    ed.scrollTop = Math.max(0, lineTop - Math.max(0, (ed.clientHeight - lh) / 2));
+    renderGutter();
+    highlightLine(n);
     $("#editorMeta").textContent = "● 已定位到第 " + n + " 行";
   }
 
