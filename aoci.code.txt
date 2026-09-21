@@ -2,7 +2,7 @@
 
 ===/Users/lutao/code/nginx-manager/===
 .gitattributes[FV5T]: F:强制全部文本文件在所有平台检出为LF，保证AOCI基线按原始字节比对不因autocrlf改写而全仓误报漂移 | R:- | A:二进制文件由git自动识别，不受行尾改写影响 | S:-
-.gitignore[FV4T]: F:声明git排除：构建产物(build/dist)、运行时数据兜底(data/)、Python 缓存与 pytest 缓存、测试产物、本地测试nginx(nginx-1.30.4/)、IDE文件与自动生成的version_info.py | R:- | A:data/实际写在用户数据目录，此处仅兜底忽略本地副本 | S:-
+.gitignore[FV4T]: F:声明git排除：构建产物(build/dist)、运行时数据兜底(data/)、Python 缓存与 pytest 缓存、测试产物、本地测试nginx(nginx-1.30.4/)、IDE文件与version_info.py、macOS的.DS_Store | R:- | A:data/实际写在用户数据目录，此处仅兜底忽略本地副本；.DS_Store 是 Finder 生成物，规则落在 macOS 段 | S:.mcp.json 与 .codex/config.toml 是机器绑定的宿主接入内容，不得提交
 AGENTS.md[SZ6S]: F:AOCI写入的宿主Agent指令区块：规定仓库认知的建立、复用、恢复与任务收尾维护原则 | R:code:aoci.txt | A:aoci:begin/end标记区块由AOCI工具维护，不手改；会话合同以aoci_rules实时返回为准 | S:-
 API.md[SU9L]: F:前后端HTTP契约唯一权威源：全部/api端点定义、资源模型与错误语义、启动参数与数据目录解析顺序、前端行为约定 | R:code:backend/server.py,code:frontend/js/api.js,code:frontend/js/app.js,code:tests/test_api_contract.py | A:契约纪律：接口变更先改本文件再改backend再同步frontend；错误统一{error,detail?}+非2xx；409+saved:true为「已保存未应用」特殊语义；文档的端点集合与成功响应顶层字段由契约测试双向比对，任一侧漂移即 CI 失败 | S:文档中的英文 key 是程序内唯一标识不可翻译；端点或响应字段两侧不一致即视为契约漂移，ROADMAP G5 以「API.md 与实现零漂移」作为 1.0 门槛
 README.en.md[SL3T]: F:英文版项目说明：功能特性、快速开始与安全提示，内容与中文README对应 | R:code:README.md | A:- | S:-
