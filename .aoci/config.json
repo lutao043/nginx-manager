@@ -112,7 +112,10 @@
       }
     ]
   },
-  "installed_agents": [],
+  "installed_agents": [
+    "claude",
+    "codex"
+  ],
   "automation": {
     "mode": "auto"
   },

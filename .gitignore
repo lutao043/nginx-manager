@@ -23,3 +23,9 @@ nginx-1.30.4/
 .idea/
 .vscode/
 version_info.py
+
+# AOCI agent host integration (machine-bound; do not commit)
+.mcp.json
+.mcp.json.backup.*
+.codex/config.toml
+.codex/config.toml.backup.*

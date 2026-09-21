@@ -108,19 +108,37 @@ ls tests/ && (cd . && python -m pytest tests/ -q)
 5. **版本号单一来源**：`backend/server.py::server_version`（`build.py`、`nginx-manager.spec`、前端持久化目录均从它派生）。
 6. **发布流程**：功能提交 → 改版本号 + 写 `release-notes/<tag>.md` → `release: vX.Y.Z` 提交 → 打 tag 推送 origin 与 github（GitHub Actions 自动构建 exe 并建 Release）。
 
-## 附录 B：AOCI 收尾状态（供后续会话接手）
+## 附录 B：AOCI 接入与收尾状态（供后续会话接手）
 
-截至 v0.7.0 收尾时，`aoci check` 返回：
+### B1 接入现状（已完成）
 
+aoci 二进制：`/Users/lutao/.local/bin/aoci`（`aoci version 0.1.0-rc12`，布局 `volumes-v1`，MCP 工具 9 个）。
+
+| 宿主 | 配置文件 | 状态 |
+|---|---|---|
+| Claude Code | `.mcp.json`（项目级） | ✓ 已配置（`aoci doctor` 确认） |
+| Codex | `.codex/config.toml`（项目级） | ✓ 已配置（首次在本仓运行 Codex 时需信任本项目） |
+| Hermes | `~/.hermes/config.yaml` → `mcp_servers.aoci` | ✓ 已配置（`hermes mcp test aoci` 连通 813ms / 9 工具） |
+
+宿主配置由 `aoci init --agent claude\|codex` 写入，属机器绑定内容，`.gitignore` 已由 aoci 自动排除（`.mcp.json`、`.codex/config.toml` 及其 backup），**不要提交**。换机器或升级二进制后重跑该命令即可，验证用 `aoci doctor`（「Agent 接入」段应显示 `已配置`）。
+
+自检命令：`aoci --repo . doctor`、`hermes mcp test aoci`、`hermes mcp list`。
+
+### B2 认知维护状态与提交口径（2026-09-21 已闭环）
+
+认知维护积压清零：`aoci.code.txt` 43 条 / 源码 43 个，`aoci check` 返回「✓ 可提交（Entries漂移/待策展/字典/格式/草稿五净）」，`aoci_maintain` 返回 `aligned`。
+
+**提交口径（rc12 实测）**：MCP 的 `aoci_update_entry` 批量 `entries` 入口在本机被客户端 Schema 校验拦下（该字段发布的 `oneOf` 分支互斥为空，任何对象都判 `not valid under any of the given schemas`），正式写入零发生。可用传输是同一管线的 CLI：
+
+```bash
+aoci update-entry --repo . --json --path <仓库相对路径> \
+  --source-sha256 <aoci_maintain 返回的该候选 sha> --stdin < 条目文件
 ```
-Volumes治理: authoring_required（46项finding）
-```
 
-即认知层有待模型作者化的语义维护积压。CLI 的写入路径对本仓库布局直接拒绝：
+逐候选提交与维护批次等价：`--source-sha256` 就是候选绑定，机器校验（Impact/S 字段配额）与原子写入完全一致。
 
-```
-aoci index update --dry-run
-→ 错误: 该命令或兼容写入路径不支持修改Volumes v1正式认知
-```
+正式流程仍以 `AGENTS.md` 与机器签发的 Plan/Guide 为准：新会话先 `aoci_rules` → `aoci_overview`（跟随 `next_cursor` 直至 `completed=true`）→ 受管理对象稳定后 `aoci_maintain` → 依据机器签发候选创作完整 F/R/A/S → 提交；`remaining` 非零时重新 `aoci_maintain` 取下一批。**不得手写索引语义绕过。**
 
-正式维护流程以 `AGENTS.md` 与机器签发的 Plan/Guide 为准（`aoci_maintain` → `aoci_update_entry`），**不得手写索引语义绕过**。本次会话无 AOCI MCP 接入（仓库无 `.mcp.json`），故该项留待具备 MCP 的会话处理。
+**条目硬约束**：F ≤160 字、R ≤360 字/8 项、A ≤400 字/6 项；S 的 rune 上限按 C 档位——C7-4 ≤200、C3-1 ≤50（超限会被 `fras_s_too_long` 拒绝，只改 S 重提）。条目须陈述「文件此刻是什么」，变更历史归 Git，写成演进叙事会被 Validator 提醒。
+
+**重要**：Hermes 的 MCP 工具在会话启动时加载，接入后必须**开新会话**才会出现 `aoci_*` 工具；当前会话内无法直接调用。
