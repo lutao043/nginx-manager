@@ -32,17 +32,31 @@ requires_posix = unittest.skipUnless(POSIX, "nginx 替身脚本依赖 POSIX shel
 INVALID_DIRECTIVE = "INVALID_DIRECTIVE"
 
 # nginx -t 失败时的真实输出形状：先 [alert]，中间才是出错位置，末尾还有 test failed 汇总
+#
+# 参数解析必须按「精确 token」判定，不能用 case "$*" in *-v*) 之类的子串匹配：
+# tempfile.mkdtemp 生成的目录名可能含 -v（如 nginx-manager-test-v88pf896），
+# 子串匹配会把 -t 调用误判成 -v 版本查询，导致 -t 变成假失败（本仓曾因此抖动）。
 NGINX_STUB = """#!/bin/sh
 # 测试替身：不依赖真实 nginx。含 {invalid} 的配置视为语法错误。
+mode=""
 conf=""
-prev=""
+want_conf=0
 for a in "$@"; do
-  if [ "$prev" = "-c" ]; then conf="$a"; fi
-  prev="$a"
+  case "$a" in
+    -v|-V) mode="version" ;;
+    -c) want_conf=1 ;;
+    *)
+      if [ "$want_conf" = "1" ]; then
+        conf="$a"
+        want_conf=0
+      fi
+      ;;
+  esac
 done
-case "$*" in
-  *-v*) echo "nginx version: nginx/1.30.4-test" >&2; exit 0 ;;
-esac
+if [ "$mode" = "version" ]; then
+  echo "nginx version: nginx/1.30.4-test" >&2
+  exit 0
+fi
 if [ "$conf" = "" ]; then
   echo "nginx: no -c given" >&2
   exit 1

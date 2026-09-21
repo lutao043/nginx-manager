@@ -78,6 +78,31 @@ class TestConfigParseTest(unittest.TestCase):
         self.assertTrue(cmd[-1].endswith("nginx.conf"))
 
 
+@requires_posix
+class StubArgParseTest(unittest.TestCase):
+    """替身脚本参数解析回归：路径含 -v 不得把 -t 误判成 -v 版本查询。
+
+    回归背景：旧实现用 `case "$*" in *-v*)` 做子串匹配，而 tempfile.mkdtemp 生成的
+    目录名可能含 -v（如 nginx-manager-test-v88pf896），于是 `nginx -t` 被当作版本查询，
+    返回版本横幅并变成假失败 —— 测试套件曾因此间歇性失败（G1 门禁不能容忍）。
+    """
+
+    def test_dash_v_in_path_does_not_hijack_test(self):
+        tmp = tempfile.mkdtemp(prefix="nm-v-check-")   # 前缀自带 -v，稳定复现旧缺陷
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        conf_dir = os.path.join(tmp, "conf")
+        os.makedirs(conf_dir, exist_ok=True)
+        stub = write_nginx_stub(tmp)
+        with open(os.path.join(conf_dir, "nginx.conf"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(VALID_CONF)
+
+        ctl = NginxController(stub, conf_dir)
+        ok, result = ctl.test_config()
+        self.assertTrue(ok, "路径含 -v 时 -t 被误判为版本查询：%s" % result)
+        self.assertIn("test is successful", result["output"])
+        self.assertEqual(ctl.get_version(), "1.30.4")
+
+
 class SafeRelTest(unittest.TestCase):
     """路径校验：绝对路径与穿越必须被拒（服务端 _safe_rel 的语义镜像，纯函数级）。"""
 
