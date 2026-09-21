@@ -37,3 +37,7 @@ jobs:
       - name: Frontend syntax check
         run: |
           for f in frontend/js/*.js; do node --check "$f"; done
+
+      # G2：JS 引用的 #id / class 必须真实存在于 index.html / style.css
+      - name: DOM contract check
+        run: python3 scripts/dom_contract.py
