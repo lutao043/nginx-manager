@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-09-15T08:29:16Z",
-  "updated_at": "2026-09-21T07:48:39Z",
+  "updated_at": "2026-09-21T07:57:02Z",
   "files": {
     ".codex/config.toml": {
       "sha256": "d0fa6beee3f724874157660bcaaded0ed043d138d139def9cfd0e5fe44c1b285",
@@ -104,9 +104,9 @@
       "normalized_sha256": "587571d3595c1521f3f62a354520c8c78d77c0a7f8feb31855e63ddd176c4069"
     },
     "ROADMAP.md": {
-      "sha256": "93e5a02a17bf1215e73deacf4b3ef4534405b440ba14c4152ad4239dd6e63954",
-      "size": 10337,
-      "normalized_sha256": "93e5a02a17bf1215e73deacf4b3ef4534405b440ba14c4152ad4239dd6e63954"
+      "sha256": "d537f0b1fd9e1b44443381ebc42a9f9d794b99718d5e8d56f9fc7c8d69386bc1",
+      "size": 18301,
+      "normalized_sha256": "d537f0b1fd9e1b44443381ebc42a9f9d794b99718d5e8d56f9fc7c8d69386bc1"
     },
     "SECURITY_AUDIT.md": {
       "sha256": "13e578bc7f80c15cf8b309d749a3a971b9fa8552e8969550a073ef52fe6f56eb",
@@ -119,9 +119,9 @@
       "normalized_sha256": "c6098e9e39de77a89ff70baf277bc21219ba67b488387c415425681bb610c9d7"
     },
     "aoci.code.txt": {
-      "sha256": "c8442e473306c028f4c8290a7b4622d8317b628c3416bcd20e8a303f54ec7bc9",
-      "size": 26365,
-      "normalized_sha256": "c8442e473306c028f4c8290a7b4622d8317b628c3416bcd20e8a303f54ec7bc9"
+      "sha256": "6ebe43498396b431b99aa2daf27d23df3a2c1b908ad832795bfd1c1a024b9f4f",
+      "size": 26672,
+      "normalized_sha256": "6ebe43498396b431b99aa2daf27d23df3a2c1b908ad832795bfd1c1a024b9f4f"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -268,9 +268,9 @@
     },
     "tests/helpers.py": {
       "role": "observe",
-      "sha256": "e955bf89f007ecf31ec4fb5caf1b14dd185c3900d29b65bd2ed8e7d246e2b4ed",
-      "size": 9116,
-      "normalized_sha256": "e955bf89f007ecf31ec4fb5caf1b14dd185c3900d29b65bd2ed8e7d246e2b4ed"
+      "sha256": "96c5925d8d5ea3a82609d34247b958ea2d665cb877ad11accd74b9643bdbcaa1",
+      "size": 9567,
+      "normalized_sha256": "96c5925d8d5ea3a82609d34247b958ea2d665cb877ad11accd74b9643bdbcaa1"
     },
     "tests/test_api_contract.py": {
       "role": "observe",
@@ -292,9 +292,9 @@
     },
     "tests/test_nginxctl_unit.py": {
       "role": "observe",
-      "sha256": "c013a4730727c421ddf19cb0c3e90f7a2c2e71493e4476c738791e48a1c45c33",
-      "size": 3880,
-      "normalized_sha256": "c013a4730727c421ddf19cb0c3e90f7a2c2e71493e4476c738791e48a1c45c33"
+      "sha256": "086ed455218a590ace8b18945ab1b85532f22aa27ac323c8f5d35ae7d223b37b",
+      "size": 5138,
+      "normalized_sha256": "086ed455218a590ace8b18945ab1b85532f22aa27ac323c8f5d35ae7d223b37b"
     },
     "tests/test_server_api.py": {
       "role": "observe",
