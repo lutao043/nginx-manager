@@ -99,6 +99,34 @@ class BackupTest(ServerTestCase):
         st, _ = self.fixture.delete("/api/backups", {"id": "19700101_000000"}, csrf=False)
         self.assertEqual(st, 403)
 
+    @requires_posix
+    def test_rapid_saves_get_distinct_backups(self):
+        """同一秒内连续保存必须各得一份独立备份。
+
+        id 是秒级时间戳：若撞名直接复用目录，后一份 copy 会覆盖前一份快照，
+        前端「回滚到 <id>」就会退回到别的时点（真实 nginx 端到端走查中发现）。
+        """
+        contents = []
+        ids = []
+        for i in range(3):
+            conf = VALID_CONF.replace("worker_processes  1;", "worker_processes  %d;" % (i + 1))
+            contents.append(conf)
+            st, body = self.fixture.put("/api/config/file",
+                                        {"path": "nginx.conf", "content": conf, "doBackup": True})
+            self.assertLess(st, 400, body)
+            ids.append(body["backupId"])
+        self.assertEqual(len(set(ids)), 3, "同一秒的三次保存拿到了重复 id：%s" % ids)
+
+        # 每份备份保存的是「各自保存前」的内容（第 i 份 = 第 i-1 次的配置）
+        listed = self.fixture.backup_ids()
+        for i, bid in enumerate(ids):
+            self.assertIn(bid, listed, "备份 %s 未出现在列表" % bid)
+            st, body = self.fixture.get("/api/backups/diff?a=%s&b=current&path=nginx.conf" % bid)
+            self.assertEqual(st, 200)
+            # 第 1 份备份 = 初始内容；第 i 份 = 第 i-1 次写入的内容
+            expect_marker = "worker_processes  %d;" % (i if i else 1)
+            self.assertIn(expect_marker, body["diff"], "备份 %s 的内容不是该时点的快照" % bid)
+
 
 if __name__ == "__main__":
     unittest.main()

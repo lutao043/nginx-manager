@@ -13,7 +13,7 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from helpers import ServerTestCase  # noqa: E402
+from helpers import VALID_CONF, ServerTestCase  # noqa: E402
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVER_PY = os.path.join(REPO_ROOT, "backend", "server.py")
@@ -123,6 +123,9 @@ class ApiDocFieldTest(ServerTestCase):
 
     def _calls(self):
         f = self.fixture
+        # 写端点探针要求配置里有一个多行 http server 块（POST /api/proxies 等只往多行块里追加），
+        # 故先复位到 VALID_CONF：
+        f.write_conf("nginx.conf", VALID_CONF)
         return {
             ("GET", "/api/status"): lambda: f.get("/api/status"),
             ("GET", "/api/config"): lambda: f.get("/api/config"),
@@ -137,8 +140,55 @@ class ApiDocFieldTest(ServerTestCase):
             ("GET", "/api/settings"): lambda: f.get("/api/settings"),
             ("POST", "/api/config/test"): lambda: f.post("/api/config/test"),
             ("PUT", "/api/config/file"): lambda: f.put("/api/config/file",
-                                                       {"path": "nginx.conf", "content": VALID}),
+                                                       {"path": "nginx.conf", "content": VALID_CONF}),
+            # 写端点（曾经只有 GET 参与字段核对，写端点的响应字段长期与文档漂移）
+            ("POST", "/api/proxies"): lambda: f.post("/api/proxies",
+                                                     {"path": "/probe", "target": PROBE_TARGET}),
+            ("PUT", "/api/proxies/switch"): lambda: f.put("/api/proxies/switch",
+                                                          {"path": "/probe", "target": PROBE_TARGET}),
+            ("PUT", "/api/proxies/targets"): lambda: f.put("/api/proxies/targets",
+                                                           {"path": "/probe",
+                                                            "targets": [PROBE_TARGET, PROBE_TARGET2],
+                                                            "active": PROBE_TARGET2}),
+            ("POST", "/api/proxy-pool"): lambda: f.post("/api/proxy-pool",
+                                                        {"target": PROBE_TARGET3, "alias": "探针"}),
+            ("PUT", "/api/proxy-pool"): lambda: f.put("/api/proxy-pool",
+                                                      {"target": PROBE_TARGET3, "alias": "探针改"}),
+            ("DELETE", "/api/proxy-pool"): lambda: f.delete("/api/proxy-pool",
+                                                            {"target": PROBE_TARGET3}),
+            ("DELETE", "/api/proxies"): lambda: f.delete("/api/proxies", {"path": "/probe"}),
+            ("POST", "/api/upstreams"): lambda: f.post("/api/upstreams",
+                                                       {"name": "probe_up", "method": "round_robin",
+                                                        "servers": [{"address": "10.9.9.9:80"}]}),
+            ("PUT", "/api/upstreams"): lambda: f.put("/api/upstreams",
+                                                     {"name": "probe_up", "method": "least_conn",
+                                                      "servers": [{"address": "10.9.9.9:80"}]}),
+            ("DELETE", "/api/upstreams"): lambda: f.delete("/api/upstreams", {"name": "probe_up"}),
+            ("POST", "/api/metrics/enable"): lambda: f.post("/api/metrics/enable",
+                                                            {"path": "/probe_status"}),
+            ("GET", "/api/backups/diff"): self._diff_call,
+            ("POST", "/api/backups/restore"): self._restore_call,
+            ("DELETE", "/api/backups"): lambda: f.delete("/api/backups", {"id": self._backup_id()}),
         }
+
+    def _backup_id(self) -> str:
+        """造一份真实备份，返回其 id（restore / delete / diff 需要已存在的备份）。"""
+        f = self.fixture
+        st, body = f.put("/api/config/file",
+                         {"path": "nginx.conf", "content": VALID_CONF, "doBackup": True})
+        self.assertLess(st, 400, "造备份失败：%s" % body)
+        st, body = f.get("/api/backups")
+        self.assertLess(st, 400, "读备份列表失败：%s" % body)
+        backups: list = list((body or {}).get("backups") or [])
+        self.assertTrue(backups, "备份列表为空，无法继续 restore/delete/diff 核对")
+        return str(backups[0]["id"])
+
+    def _restore_call(self):
+        return self.fixture.post("/api/backups/restore", {"id": self._backup_id()})
+
+    def _diff_call(self):
+        bid = self._backup_id()
+        return self.fixture.get("/api/backups/diff?a=%s&b=%s&path=nginx.conf" % (bid, bid))
 
     def test_documented_response_fields_are_returned(self):
         """文档与响应字段双向一致。
@@ -167,18 +217,17 @@ class ApiDocFieldTest(ServerTestCase):
                                     % (variants, sorted(actual)))
 
     def test_calls_cover_every_get_endpoint(self):
-        """除带必填参数的查询与需图形界面的端点外，所有 GET 端点都应被上面的字段核对覆盖。"""
+        """所有 GET 端点都应被上面的字段核对覆盖（无例外清单，防漏检）。"""
         doc = documented_endpoints()
         covered = set(self._calls())
-        skipped = {("GET", "/api/backups/diff")}   # 需要 a/b/path 三个参数
-        missing = {k for k in doc if k[0] == "GET" and k not in covered and k not in skipped}
+        missing = {k for k in doc if k[0] == "GET" and k not in covered}
         self.assertEqual(sorted(missing), [], "有 GET 端点未被字段核对覆盖：%s" % sorted(missing))
 
 
-VALID = """worker_processes  1;
-events { worker_connections  64; }
-http { server { listen 8080; } }
-"""
+# 字段核对用的探针地址（127.0.0.1 上不存在的端口，仅作为配置文本，不发起连接）
+PROBE_TARGET = "http://127.0.0.1:9009"
+PROBE_TARGET2 = "http://127.0.0.1:9010"
+PROBE_TARGET3 = "http://127.0.0.1:9011"
 
 
 class VersionConsistencyTest(unittest.TestCase):

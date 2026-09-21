@@ -116,5 +116,250 @@ class SafeRelTest(unittest.TestCase):
             self.assertEqual(h._safe_rel(good), good)
 
 
+# 带 configure 参数的替身：只用于 prefix/pid 推断用例（真实 -V 输出形状）
+CONFIGURE_STUB = """#!/bin/sh
+for a in "$@"; do
+  case "$a" in
+    -v|-V)
+      echo "nginx version: nginx/1.30.4" >&2
+      echo "built by clang 15.0.0" >&2
+      echo "configure arguments: --prefix={prefix} --conf-path={prefix}/conf/nginx.conf --pid-path={pidpath}" >&2
+      exit 0
+      ;;
+  esac
+done
+conf=""
+want_conf=0
+for a in "$@"; do
+  case "$a" in
+    -c) want_conf=1 ;;
+    *) if [ "$want_conf" = "1" ]; then conf="$a"; want_conf=0; fi ;;
+  esac
+done
+echo "nginx: configuration file $conf test is successful" >&2
+exit 0
+"""
+
+
+@requires_posix
+class PathResolutionTest(unittest.TestCase):
+    """prefix 与 pid 文件路径推断。
+
+    回归背景：confDir 的父目录在发行版布局下是错的（confDir=/etc/nginx → prefix=/etc），
+    而 pid 文件常被发行版配置写成 /run/nginx.pid —— 取错会导致「在运行却报未运行」
+    或干脆操作到别的实例。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="nm-cfgpath-")
+        self.conf_dir = os.path.join(self.tmp, "etc", "nginx")
+        os.makedirs(self.conf_dir, exist_ok=True)
+        self.stub = write_nginx_stub(self.tmp)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _conf(self, text):
+        with open(os.path.join(self.conf_dir, "nginx.conf"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+
+    def _configure_stub(self, prefix, pid_path):
+        path = os.path.join(self.tmp, "nginx-cfg")
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(CONFIGURE_STUB.format(prefix=prefix, pidpath=pid_path))
+        os.chmod(path, 0o755)
+        return path
+
+    def test_prefix_falls_back_to_parent(self):
+        """替身（无 configure 输出）时沿用旧启发式，行为不劣化。"""
+        ctl = NginxController(self.stub, self.conf_dir)
+        self.assertEqual(ctl.prefix, os.path.dirname(self.conf_dir))
+
+    def test_prefix_from_compile_flags(self):
+        ctl = NginxController(self._configure_stub("/usr/local/nginx", "/usr/local/nginx/logs/nginx.pid"),
+                              self.conf_dir)
+        self.assertEqual(ctl.prefix, "/usr/local/nginx")
+        self.assertEqual(ctl.get_version(), "1.30.4")
+
+    def test_pid_directive_wins(self):
+        ctl = NginxController(self.stub, self.conf_dir)
+        self._conf("pid /run/nginx.pid;\n")
+        self.assertEqual(ctl.pid_file_path(), "/run/nginx.pid")
+        self._conf("pid        logs/nginx.pid;\n")
+        self.assertEqual(ctl.pid_file_path(), os.path.join(ctl.prefix, "logs", "nginx.pid"))
+
+    def test_pid_falls_back_to_compile_flag(self):
+        ctl = NginxController(self._configure_stub("/usr/local/nginx", "/var/run/custom.pid"),
+                              self.conf_dir)
+        self._conf("worker_processes 1;\n")
+        self.assertEqual(ctl.pid_file_path(), "/var/run/custom.pid")
+
+    def test_signal_cmd_passes_main_conf(self):
+        """-s 系列必须带 -c：不带时 nginx 读默认 conf 的 pid，会操作到另一个实例。"""
+        ctl = NginxController(self.stub, self.conf_dir)
+        cmd = ctl._signal_cmd("quit")
+        self.assertIn("-s", cmd)
+        self.assertIn("quit", cmd)
+        self.assertIn("-c", cmd)
+        self.assertTrue(cmd[-1].endswith("nginx.conf"))
+
+    def test_stale_pid_file_cleanup(self):
+        """空 / 非数字 / 已死 / 被无关进程占用的 pid 文件都要清掉。
+
+        最后一种最危险：pid 被系统复用给别的进程时，UI 会显示错误的 PID，
+        而且这个 pid 会被当成本实例的 master。
+        """
+        ctl = NginxController(self.stub, self.conf_dir)
+        self._conf("pid logs/nginx.pid;\n")
+        pid_file = ctl.pid_file_path()
+        os.makedirs(os.path.dirname(pid_file), exist_ok=True)
+        for content in ("", "not-a-pid\n", "999999999\n", "%d\n" % os.getpid()):
+            with open(pid_file, "w", encoding="utf-8", newline="\n") as f:
+                f.write(content)
+            ctl._clean_stale_pid_file()
+            self.assertFalse(os.path.exists(pid_file),
+                             "残留 pid 文件未清理: %r" % content)
+
+    def test_not_running_without_pid_file(self):
+        ctl = NginxController(self.stub, self.conf_dir)
+        self._conf("pid logs/nginx.pid;\n")
+        self.assertFalse(ctl.is_running())
+
+
+@requires_posix
+class StubStatusScanTest(unittest.TestCase):
+    """stub_status 定位：路径取最近包围 location，端口配对其所在 server。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="nm-stubscan-")
+        self.conf_dir = os.path.join(self.tmp, "conf")
+        os.makedirs(self.conf_dir, exist_ok=True)
+        self.stub = write_nginx_stub(self.tmp)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _conf(self, text):
+        with open(os.path.join(self.conf_dir, "nginx.conf"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        return NginxController(self.stub, self.conf_dir)
+
+    def test_port_paired_with_owning_server(self):
+        """第一个 listen 是 8080，但 stub_status 在 9091 那台 server 上 —— 必须取 9091。"""
+        ctl = self._conf("""http {
+    server {
+        listen 8080;
+        location / {
+            return 200 "ok";
+        }
+    }
+    server {
+        listen 127.0.0.1:9091;
+        location /nginx_status {
+            stub_status;
+            allow 127.0.0.1;
+            deny all;
+        }
+    }
+}
+""")
+        stub = ctl.find_stub_status()
+        self.assertEqual(stub["path"], "/nginx_status")
+        self.assertEqual(stub["port"], 9091)
+        self.assertEqual(ctl.detect_listen_port(), 8080)
+
+    def test_nested_location_takes_inner_path(self):
+        ctl = self._conf("""http {
+    server {
+        listen 8080;
+        location /outer {
+            location = /inner {
+                stub_status;
+            }
+        }
+    }
+}
+""")
+        self.assertEqual(ctl.find_stub_status()["path"], "/inner")
+
+    def test_quoted_brace_does_not_break_scan(self):
+        """server 块内的引号字符串含 } 时，不能把块提前闭合、丢掉 listen 端口。"""
+        ctl = self._conf("""http {
+    server {
+        listen [::]:8443;
+        add_header X-End "}";
+        location /nginx_status {
+            stub_status;
+        }
+    }
+}
+""")
+        stub = ctl.find_stub_status()
+        self.assertEqual(stub["port"], 8443)
+
+    def test_no_stub_status(self):
+        ctl = self._conf("http {\n    server {\n        listen 80;\n    }\n}\n")
+        self.assertIsNone(ctl.find_stub_status())
+
+
+@requires_posix
+class ErrorLogLocateTest(unittest.TestCase):
+    """错误日志定位：配置里声明的路径优先，不能一律拿 <prefix>/logs/error.log 顶替。
+
+    真实 nginx 端到端走查发现：conf 里写了绝对路径的 error_log，界面仍展示 prefix 下那份
+    （两份都存在时尤其容易看错），与访问日志的「配置优先」口径不一致。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="nm-errlog-")
+        self.conf_dir = os.path.join(self.tmp, "conf")
+        os.makedirs(os.path.join(self.conf_dir, "logs"), exist_ok=True)
+        self.stub = write_nginx_stub(self.tmp)
+        # prefix 下的兜底日志（前缀目录的父目录 = prefix）
+        self.prefix_log = os.path.join(self.tmp, "logs", "error.log")
+        os.makedirs(os.path.dirname(self.prefix_log), exist_ok=True)
+        with open(self.prefix_log, "w", encoding="utf-8") as f:
+            f.write("prefix log\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _ctl(self, conf):
+        with open(os.path.join(self.conf_dir, "nginx.conf"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(conf)
+        return NginxController(self.stub, self.conf_dir)
+
+    def test_config_declared_absolute_path_wins(self):
+        custom = os.path.join(self.tmp, "elsewhere", "error.log")
+        os.makedirs(os.path.dirname(custom), exist_ok=True)
+        with open(custom, "w", encoding="utf-8") as f:
+            f.write("declared log\n")
+        ctl = self._ctl("error_log %s warn;\nworker_processes 1;\n" % custom)
+        self.assertEqual(ctl.locate_error_log(), custom)
+
+    def test_relative_path_resolved_against_prefix(self):
+        rel_dir = os.path.join(self.tmp, "logs")
+        custom = os.path.join(rel_dir, "custom-error.log")
+        with open(custom, "w", encoding="utf-8") as f:
+            f.write("relative log\n")
+        ctl = self._ctl("error_log logs/custom-error.log;\n")
+        self.assertEqual(ctl.locate_error_log(), custom)
+
+    def test_non_file_targets_skipped(self):
+        """stderr / syslog: / memory: 不是文件，跳过后退回 prefix 兜底路径。"""
+        for target in ("stderr", "syslog:server=unix:/dev/log", "memory:32m"):
+            ctl = self._ctl("error_log %s;\n" % target)
+            self.assertEqual(ctl.locate_error_log(), self.prefix_log, "目标 %r 未跳过" % target)
+
+    def test_missing_declared_file_falls_back(self):
+        ctl = self._ctl("error_log %s;\n" % os.path.join(self.tmp, "not-there.log"))
+        self.assertEqual(ctl.locate_error_log(), self.prefix_log)
+
+    def test_no_log_at_all_returns_none(self):
+        os.remove(self.prefix_log)
+        ctl = self._ctl("worker_processes 1;\n")
+        self.assertIsNone(ctl.locate_error_log())
+
+
 if __name__ == "__main__":
     unittest.main()
