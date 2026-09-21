@@ -1539,6 +1539,18 @@ def find_free_port(preferred: int | None, retries: int = 10) -> int:
         return s.getsockname()[1]
 
 
+def _port_arg(value: str) -> int:
+    """--port 参数校验：越界端口在 bind 阶段才会抛 OverflowError（且 <1024 需管理员权限），
+    故在入口就拒绝，避免启动到一半才报栈。"""
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("端口必须是整数")
+    if not (1 <= port <= 65535):
+        raise argparse.ArgumentTypeError("端口必须在 1~65535 之间")
+    return port
+
+
 # ---------- 入口 ----------
 
 def find_workspace_nginx() -> dict:
@@ -1618,7 +1630,7 @@ def migrate_legacy_pool(ctl: NginxController) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="nginx 轻量网页管理端")
-    parser.add_argument("--port", type=int, default=None, help=f"监听端口（缺省 {DEFAULT_PORT}）")
+    parser.add_argument("--port", type=_port_arg, default=None, help=f"监听端口（缺省 {DEFAULT_PORT}）")
     parser.add_argument("--nginx-path", default=None, help="nginx 可执行文件路径（跳过首次选择对话框）")
     parser.add_argument("--conf-dir", default=None, help="nginx 配置目录（跳过首次选择对话框）")
     parser.add_argument(

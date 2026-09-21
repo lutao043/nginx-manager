@@ -3,12 +3,16 @@
 服务以真实子进程运行（见 helpers.ServerFixture），断言的是真实响应与真实磁盘状态。
 """
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from helpers import INVALID_DIRECTIVE, VALID_CONF, ServerTestCase, requires_posix  # noqa: E402
+from helpers import (INVALID_DIRECTIVE, REPO_ROOT, SERVER_PY, VALID_CONF,  # noqa: E402
+                     ServerTestCase, requires_posix)
 
 
 class StatusTest(ServerTestCase):
@@ -121,6 +125,39 @@ class ConfigFileTest(ServerTestCase):
         self.assertEqual(st, 200)
         self.assertTrue(body.get("ok"))
         self.assertIn("successful", body.get("output", ""))
+
+
+class StartupArgValidationTest(unittest.TestCase):
+    """启动参数边界（SECURITY_AUDIT P3）：越界/非数字端口必须在入口被拒，不能启动到 bind 才抛栈。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="nm-startup-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _run(self, *args):
+        proc = subprocess.run(
+            [sys.executable, "-u", SERVER_PY, "--data-dir", self.tmp, *args],
+            capture_output=True, text=True, timeout=60, cwd=REPO_ROOT,
+            env={**os.environ, "BROWSER": "/usr/bin/true"},
+        )
+        return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+    def test_rejects_out_of_range_port(self):
+        code, out = self._run("--port", "70000")
+        self.assertEqual(code, 2)
+        self.assertIn("1~65535", out)
+
+    def test_rejects_zero_port(self):
+        code, out = self._run("--port", "0")
+        self.assertEqual(code, 2)
+        self.assertIn("1~65535", out)
+
+    def test_rejects_non_numeric_port(self):
+        code, out = self._run("--port", "abc")
+        self.assertEqual(code, 2)
+        self.assertIn("整数", out)
 
 
 if __name__ == "__main__":
