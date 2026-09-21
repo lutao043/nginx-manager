@@ -186,6 +186,9 @@ const App = (() => {
     $("#tabConfig").addEventListener("click", () => switchTab("config"));
     $("#tabProxies").addEventListener("click", () => switchTab("proxies"));
     $("#tabUpstreams").addEventListener("click", () => switchTab("upstreams"));
+    // 页签键盘导航：←/→/Home/End（roving tabindex，整组只占一个 Tab 停靠点）
+    bindTablistKeys(".tabs", ["config", "proxies", "upstreams"], (n) => TAB_MAP[n].tab, switchTab);
+    bindTablistKeys(".dock-tabs", ["backups", "errorlog", "accesslog"], (n) => DOCK_MAP[n].tab, switchDock);
     // 代理
     $("#btnRefreshProxies").addEventListener("click", loadProxies);
     $("#btnAddProxy").addEventListener("click", openAddProxy);
@@ -247,8 +250,12 @@ const App = (() => {
 
   function switchTab(name) {
     Object.entries(TAB_MAP).forEach(([key, ref]) => {
-      $(ref.tab).classList.toggle("active", key === name);
-      $(ref.view).hidden = key !== name;
+      const active = key === name;
+      const tab = $(ref.tab);
+      tab.classList.toggle("active", active);
+      tab.setAttribute("aria-selected", String(active));
+      tab.tabIndex = active ? 0 : -1;   // roving tabindex：整组只留一个 Tab 停靠点
+      $(ref.view).hidden = !active;
     });
     if (name === "proxies") {
       loadPool();
@@ -257,6 +264,26 @@ const App = (() => {
     } else if (name === "upstreams") {
       loadUpstreams();
     }
+  }
+
+  /* 页签键盘导航：←/→ 在页签间移动并即时切换，Home/End 跳首尾（符合 ARIA tablist 习惯） */
+  function bindTablistKeys(boxSel, names, tabSelOf, switchFn) {
+    const box = $(boxSel);
+    if (!box) return;
+    box.addEventListener("keydown", (e) => {
+      const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+      if (keys.indexOf(e.key) === -1) return;
+      const current = names.findIndex((n) => $(tabSelOf(n)).getAttribute("aria-selected") === "true");
+      const from = current < 0 ? 0 : current;
+      let next = from;
+      if (e.key === "ArrowLeft") next = (from - 1 + names.length) % names.length;
+      else if (e.key === "ArrowRight") next = (from + 1) % names.length;
+      else if (e.key === "Home") next = 0;
+      else next = names.length - 1;
+      e.preventDefault();
+      switchFn(names[next]);
+      $(tabSelOf(names[next])).focus();
+    });
   }
 
   /* ---------- 底部停靠页签（配置备份/错误日志/访问日志） ---------- */
@@ -268,8 +295,12 @@ const App = (() => {
 
   function switchDock(name) {
     Object.entries(DOCK_MAP).forEach(([key, ref]) => {
-      $(ref.tab).classList.toggle("active", key === name);
-      $(ref.body).hidden = key !== name;
+      const active = key === name;
+      const tab = $(ref.tab);
+      tab.classList.toggle("active", active);
+      tab.setAttribute("aria-selected", String(active));
+      tab.tabIndex = active ? 0 : -1;
+      $(ref.body).hidden = !active;
     });
   }
 
@@ -589,17 +620,56 @@ const App = (() => {
       // 目录可折叠：配置目录层级较深时，避免整棵树拉得很长
       item.title = "展开 / 折叠";
       item.setAttribute("aria-expanded", "true");
-      item.addEventListener("click", () => {
-        const kids = wrap.querySelector(".tree-children");
-        if (!kids) return;
-        kids.hidden = !kids.hidden;
-        arrow.textContent = kids.hidden ? "▸" : "▾";
-        item.setAttribute("aria-expanded", String(!kids.hidden));
-      });
+      item.addEventListener("click", toggleDir);
     } else {
       item.addEventListener("click", () => openFile(node.path));
     }
+
+    function toggleDir() {
+      const kids = wrap.querySelector(".tree-children");
+      if (!kids) return;
+      kids.hidden = !kids.hidden;
+      arrow.textContent = kids.hidden ? "▸" : "▾";
+      item.setAttribute("aria-expanded", String(!kids.hidden));
+    }
+
+    // 键盘可达：树项可聚焦，Enter/Space 激活，↑/↓ 在可见项间移动，目录 ←/→ 折叠展开
+    // （ROADMAP G3 要求不碰鼠标走完「选文件 → 编辑 → 保存 → 回滚」）
+    item.tabIndex = 0;
+    item.setAttribute("role", "treeitem");
+    item.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        // 键盘激活时直接调目标函数：click() 会经 renderTree 重建 DOM，焦点随之丢失
+        if (isDir) toggleDir();
+        else openFile(node.path, true);
+        return;
+      }
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        focusSiblingTreeItem(item, e.key === "ArrowDown" ? 1 : -1);
+        return;
+      }
+      if (isDir && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
+        e.preventDefault();
+        const kids = wrap.querySelector(".tree-children");
+        if (!kids) return;
+        const wantOpen = e.key === "ArrowRight";
+        if (kids.hidden === wantOpen) return;
+        kids.hidden = !wantOpen;
+        arrow.textContent = kids.hidden ? "▸" : "▾";
+        item.setAttribute("aria-expanded", String(!kids.hidden));
+      }
+    });
     return wrap;
+  }
+
+  /* 在文件树的可见项之间移动焦点（↑/↓） */
+  function focusSiblingTreeItem(item, delta) {
+    const items = Array.from(document.querySelectorAll("#fileTree .tree-item"))
+      .filter((el) => el.offsetParent !== null);
+    const target = items[items.indexOf(item) + delta];
+    if (target) target.focus();
   }
 
   /* ---------- 编辑器辅助：行列指示 / Tab 缩进 / Ctrl+S ---------- */
@@ -741,10 +811,19 @@ const App = (() => {
       historyRedo();
       return;
     }
-    // Tab 缩进 / Shift+Tab 反缩进（默认行为是跳出编辑器，编辑配置时很反人类）
+    // Tab 缩进 / Shift+Tab 反缩进（默认行为是跳出编辑器，编辑配置时很反人类）；
+    // 代价是 Tab 出不去编辑器，故 Esc 把焦点交给下一个可聚焦控件（编辑器惯例）
     if (e.key === "Tab") {
       e.preventDefault();
       editorIndent(e.shiftKey);
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      const ed = $("#editor");
+      const all = focusableIn(document.body);
+      const next = all[all.indexOf(ed) + 1];
+      if (next) next.focus(); else ed.blur();
     }
   }
 
@@ -784,7 +863,8 @@ const App = (() => {
   }
 
   /* ---------- 文件编辑 ---------- */
-  async function openFile(path) {
+  /* focusEditorFromKeyboard：由文件树的键盘激活传入（点击不需要抢焦点） */
+  async function openFile(path, focusEditorFromKeyboard) {
     if (editing) {
       const ok = await confirmDialog("当前文件有未保存的修改，放弃修改并切换文件？");
       if (!ok) return;
@@ -805,6 +885,8 @@ const App = (() => {
       renderGutter();
       highlightLine(0);
       updateCaret();
+      // 键盘选文件时直接把焦点送进编辑器，省去再按一次 Tab
+      if (focusEditorFromKeyboard) $("#editor").focus();
       $("#saveWarning").hidden = true;
     } catch (e) {
       toast(e.message, "error");
@@ -824,6 +906,7 @@ const App = (() => {
     $("#saveDiffView").innerHTML = renderDiffHtml(lineDiff(originalContent, content));
     lockBody();
     openModal("#saveDiffModal");
+    $("#btnSaveDiffBackup").focus();   // 键盘流程：打开即可回车「保存并备份」
   }
 
   function closeSaveDiff() {

@@ -106,10 +106,10 @@
 
       <!-- 工具条：视图页签 + 服务控制 -->
       <div class="tabs-bar">
-        <div class="tabs">
-          <button class="tab active" id="tabConfig" type="button">配置文件</button>
-          <button class="tab" id="tabProxies" type="button">代理管理</button>
-          <button class="tab" id="tabUpstreams" type="button">负载均衡</button>
+        <div class="tabs" role="tablist" aria-label="视图切换">
+          <button class="tab active" id="tabConfig" type="button" role="tab" aria-selected="true" aria-controls="viewConfig" tabindex="0">配置文件</button>
+          <button class="tab" id="tabProxies" type="button" role="tab" aria-selected="false" aria-controls="viewProxies" tabindex="-1">代理管理</button>
+          <button class="tab" id="tabUpstreams" type="button" role="tab" aria-selected="false" aria-controls="viewUpstreams" tabindex="-1">负载均衡</button>
         </div>
         <div class="tabs-bar-actions">
           <span id="reloadHint" class="push" hidden>配置已保存，尚未生效</span>
@@ -150,7 +150,7 @@
       <div class="view-area">
 
         <!-- 配置文件视图 -->
-        <div id="viewConfig" class="dashboard-body">
+        <div id="viewConfig" class="dashboard-body" role="tabpanel" aria-labelledby="tabConfig">
           <!-- 左侧：配置文件树 -->
           <aside class="sidebar">
             <div class="sidebar-head">
@@ -159,7 +159,7 @@
                 <svg class="i"><use href="#i-refresh"/></svg>
               </button>
             </div>
-            <nav id="fileTree" class="file-tree" aria-label="配置文件树"></nav>
+            <nav id="fileTree" class="file-tree" role="tree" aria-label="配置文件树"></nav>
           </aside>
 
           <!-- 右侧：编辑器 + 底部停靠区 -->
@@ -194,14 +194,14 @@
             <!-- 底部停靠区：备份 / 错误日志 / 访问日志 -->
             <div class="panel dock-panel" id="dockPanel">
               <div class="dock-head">
-                <div class="dock-tabs">
-                  <button class="dock-tab active" id="dockTabBackups" type="button">配置备份<span id="backupCount" class="panel-count"></span></button>
-                  <button class="dock-tab" id="dockTabErrorLog" type="button">错误日志</button>
-                  <button class="dock-tab" id="dockTabAccessLog" type="button">访问日志</button>
+                <div class="dock-tabs" role="tablist" aria-label="停靠区页签">
+                  <button class="dock-tab active" id="dockTabBackups" type="button" role="tab" aria-selected="true" aria-controls="dockBackups" tabindex="0">配置备份<span id="backupCount" class="panel-count"></span></button>
+                  <button class="dock-tab" id="dockTabErrorLog" type="button" role="tab" aria-selected="false" aria-controls="dockErrorLog" tabindex="-1">错误日志</button>
+                  <button class="dock-tab" id="dockTabAccessLog" type="button" role="tab" aria-selected="false" aria-controls="dockAccessLog" tabindex="-1">访问日志</button>
                 </div>
               </div>
 
-              <div class="dock-body" id="dockBackups">
+              <div class="dock-body" id="dockBackups" role="tabpanel" aria-labelledby="dockTabBackups">
                 <div class="dock-toolbar">
                   <span class="muted small" id="backupRetentionTip"></span>
                   <span class="dock-spacer"></span>
@@ -212,7 +212,7 @@
                 <div id="backupList" class="backup-list"><p class="muted">暂无备份</p></div>
               </div>
 
-              <div class="dock-body" id="dockErrorLog" hidden>
+              <div class="dock-body" id="dockErrorLog" role="tabpanel" aria-labelledby="dockTabErrorLog" hidden>
                 <div class="dock-toolbar">
                   <span class="dock-path mono small" id="logPathLabel"></span>
                   <span class="dock-spacer"></span>
@@ -223,7 +223,7 @@
                 <pre id="errorLog" class="log-view">（点击刷新加载错误日志）</pre>
               </div>
 
-              <div class="dock-body" id="dockAccessLog" hidden>
+              <div class="dock-body" id="dockAccessLog" role="tabpanel" aria-labelledby="dockTabAccessLog" hidden>
                 <div class="dock-toolbar">
                   <span class="dock-path mono small" id="accessLogPathLabel"></span>
                   <select id="accessLogPath" class="log-path-select" title="切换日志文件" hidden></select>
@@ -240,7 +240,7 @@
         </div><!-- /viewConfig -->
 
         <!-- 代理管理视图 -->
-        <div id="viewProxies" class="dashboard-body" hidden>
+        <div id="viewProxies" class="dashboard-body" role="tabpanel" aria-labelledby="tabProxies" hidden>
           <section class="content">
             <div class="panel proxy-panel">
               <div class="panel-head">
@@ -274,7 +274,7 @@
         </div><!-- /viewProxies -->
 
         <!-- 负载均衡视图 -->
-        <div id="viewUpstreams" class="dashboard-body" hidden>
+        <div id="viewUpstreams" class="dashboard-body" role="tabpanel" aria-labelledby="tabUpstreams" hidden>
           <section class="content">
             <div class="panel upstream-panel">
               <div class="panel-head">
@@ -542,6 +542,8 @@
 
   <!-- 全局提示 -->
   <div id="toast" class="toast" hidden></div>
+  <!-- 读屏播报区：保存/校验/回滚等结果经 toast 同步写入（视觉隐藏，aria-live 朗读） -->
+  <div id="srStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
 </div>
 
 <script src="js/api.js"></script>
