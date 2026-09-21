@@ -1,7 +1,7 @@
 # ROADMAP.md — 前端优化目标与 1.0 发布门槛
 
 > **本文是「页面优化到什么程度算完」的唯一判定依据。**
-> 基线：**v0.7.0**（2026-09-21，界面整体重构已发布并打 tag）。
+> 基线：**v0.7.0**（2026-09-21，界面整体重构已发布并打 tag）。G1–G6 落地后的复测值见第二节第三列。
 > 修改本文必须同步更新下面「实测基线」表里的数字，否则判定失效。
 
 ## 一、优化目标（三层，每层都可验收）
@@ -16,38 +16,47 @@
 
 ## 二、实测基线（v0.7.0，2026-09-21）
 
-| 维度 | 实测值 | 状态 |
-|---|---|---|
-| 视觉层级 / 主题 | 边框界定层级；8 主题（4 配色 × 日夜）；零外部请求 | ✅ 达标 |
-| 对比度 | 暗色最浅灰字 4.5:1（重构前 2.9:1）；emerald-light 主色白字 5.0:1（原 4.1:1） | ✅ 达标 |
-| 危险操作防护 | 保存前自动备份 + `nginx -t` + `409 saved:true` 警告条 + 一键回滚；路径穿越校验 9 处；全仓 `shell=` 命中 0（无 shell=True）；写接口强制 `X-Requested-With` | ✅ 达标 |
-| 阻塞式原生弹窗 | `alert(` / `confirm(` / `prompt(` 命中 0（全部为自绘弹窗） | ✅ 达标 |
-| 减少动效 | `prefers-reduced-motion` 已有处理 | ✅ 达标 |
-| 键盘可达 | 仅 Ctrl/Cmd+S、编辑器 Tab 缩进、Esc 关弹窗。**无弹窗焦点陷阱、弹窗打开时背景未 `inert`**（Tab 会跑到遮罩后）；页签无方向键切换 | ⚠️ 未达标 |
-| 无障碍语义 | `aria-label` 24、`role=` 9、`aria-expanded`（HTML 1 + JS 4）；**`aria-selected` / `aria-live` / `aria-labelledby` / `tabindex` 均为 0**（读屏听不到「配置已保存」，也不知道当前页签） | ⚠️ 未达标 |
-| 焦点样式 | `:focus-visible` 1 处、`:focus` 6 处（键盘专用焦点样式偏少） | ⚠️ 待收敛 |
-| 编辑器能力 | **无行号**、无 Ctrl+Z。nginx 报错精确给出行号，编辑器却不提供行号定位 | ❌ 未达标 |
-| 自动化测试 | **`tests/` 不存在**；CI（`build.yml`）只有 build + release，**无任何测试任务** | ❌ 未达标 |
+| 维度 | v0.7.0 基线实测值 | G1–G6 落地后复测（2026-09-21） | 状态 |
+|---|---|---|---|
+| 视觉层级 / 主题 | 边框界定层级；8 主题（4 配色 × 日夜）；零外部请求 | 未改动 | ✅ 达标 |
+| 对比度 | 暗色最浅灰字 4.5:1（重构前 2.9:1）；emerald-light 主色白字 5.0:1（原 4.1:1） | 未改动 | ✅ 达标 |
+| 危险操作防护 | 保存前自动备份 + `nginx -t` + `409 saved:true` 警告条 + 一键回滚；路径穿越校验 9 处；全仓 `shell=` 命中 0（无 shell=True）；写接口强制 `X-Requested-With` | 同上；另加 `--port` 入口范围校验（越界或非整数以退出码 2 拒绝，不在 bind 阶段才抛错） | ✅ 达标 |
+| 阻塞式原生弹窗 | `alert(` / `confirm(` / `prompt(` 命中 0（全部为自绘弹窗） | 复测仍为 0 | ✅ 达标 |
+| 减少动效 | `prefers-reduced-motion` 已有处理 | 未改动 | ✅ 达标 |
+| 键盘可达 | 仅 Ctrl/Cmd+S、编辑器 Tab 缩进、Esc 关弹窗。**无弹窗焦点陷阱、弹窗打开时背景未 `inert`**（Tab 会跑到遮罩后）；页签无方向键切换 | 弹窗焦点陷阱 + 背景 `inert` + 关闭归还焦点；页签 roving tabindex + 方向键；编辑器以 Esc 交出焦点（Tab 被缩进占用）；真实浏览器纯键盘走查「切页签 → 选文件 → 编辑 → 保存 → 处理 409 → 回滚」一遍通过 | ✅ 达标 |
+| 无障碍语义 | `aria-label` 24、`role=` 9、`aria-expanded`（HTML 1 + JS 4）；**`aria-selected` / `aria-live` / `aria-labelledby` / `tabindex` 均为 0** | `aria-label` 33、`role=` 25、`aria-labelledby` 6、`aria-selected` 6（+JS 3）、`aria-live` 2（+JS 1）、`tabindex` 6（+JS 5） | ✅ 达标 |
+| 焦点样式 | `:focus-visible` 1 处、`:focus` 6 处（键盘专用焦点样式偏少） | `:focus-visible` 10 处、`:focus` 16 处（自带底色控件给醒目焦点环） | ✅ 达标 |
+| 编辑器能力 | **无行号**、无 Ctrl+Z。nginx 报错精确给出行号，编辑器却不提供行号定位 | 行号栏随行数与滚动同步；Ctrl/Cmd+Z 撤销 + Ctrl+Y 重做（自建快照历史、连续输入合并）；校验失败跳转后居中滚动并高亮该行 | ✅ 达标 |
+| 自动化测试 | **`tests/` 不存在**；CI（`build.yml`）只有 build + release，**无任何测试任务** | `tests/` 43 用例（真实子进程 HTTP 全链路、备份/回滚含最坏失败模式门禁、`nginx -t` 行号解析、DOM 契约、启动参数边界、API 契约与版本一致性）；`scripts/dom_contract.py` 静态契约检查；GitHub/Gitea 双宿主测试门禁（`tags-ignore: v*.*.*`，不干扰发布） | ✅ 达标 |
+| 契约与版本一致性 | 未度量 | `API.md` 与实现端点集合 34/34 双向一致、13 个端点的成功响应顶层字段双向一致；版本单一来源 `server_version` 且不落后最新 tag | ✅ 达标 |
 
-**综合评估**：界面完成度约 0.8，发布成熟度约 0.5——差距集中在「可验证」这一侧。
+**综合评估（G1–G6 落地后）**：三层目标的可验收项均已达标——界面完成度约 0.95，发布成熟度约 0.9。差距从「可验证」转到「真实环境验证」。
+
+**本表未覆盖的剩余风险**（发布正式版前应另行确认）：① 端到端只跑过替身脚本，真实 `nginx` 二进制的完整走查仍需人工确认；② 未在 Windows 实机验证（CI 测试任务跑 ubuntu，替身相关用例在 Windows 自动跳过）；③ 对比度为公式换算值，未做真机取色复核。
 
 ## 三、1.0 硬性门槛（逐条全部满足才可发正式版）
 
-- [ ] **G1 自动化测试并接入 CI**
+- [x] **G1 自动化测试并接入 CI**
   - 后端：以临时数据目录 + 临时配置目录启动服务，覆盖 `/api/status`、配置文件 CRUD、备份/回滚、`nginx -t` 失败路径。
   - 必含回归用例：**保存一份校验失败的配置后，备份仍存在且可回滚回原内容**（这是本工具最坏的失败模式）。
   - 验收：CI 中有测试任务，且本地 `python -m pytest tests/`（或等价命令）可一键跑通。
-- [ ] **G2 DOM 契约测试**
+  - **已达成（2026-09-21）**：`tests/` 43 用例，走真实服务子进程 + 真实 HTTP（只把 nginx 换成替身脚本）；`.github/workflows/tests.yml` 与 `.gitea/workflows/tests.yml` 在任意分支 push/PR 触发并 `tags-ignore: v*.*.*`（不重复触发发布）；双入口 `python3.12 -m unittest discover -s tests -t .` 与 `uv run --with pytest python -m pytest tests/ -q` 均通过；最坏失败模式门禁在 `tests/test_backup_restore.py`。
+- [x] **G2 DOM 契约测试**
   - 断言 JS 引用的 `#id` / class 在 `index.html` / `style.css` 中真实存在（重构期间靠临时脚本做过，必须固化为 CI 断言）。
   - 验收：故意改坏一个按钮 id，CI 必须失败。
-- [ ] **G3 键盘走完全流程**
+  - **已达成（2026-09-21）**：`scripts/dom_contract.py`（纯标准库，无参数即按仓库布局运行，免个人脚本目录依赖）+ CI 步骤 + `tests/test_dom_contract.py` 门禁；验收试验：改坏按钮 id 即失败、改回即通过。
+- [x] **G3 键盘走完全流程**
   - 弹窗焦点陷阱 + 打开时背景 `inert`；页签支持方向键；`aria-selected` 跟随当前页签；保存/校验结果用 `aria-live` 播报。
   - 验收：不碰鼠标完成「切页签 → 选文件 → 编辑 → 保存 → 处理校验失败 → 回滚」。
-- [ ] **G4 编辑器补齐行号 + Ctrl+Z/Ctrl+Y**
+  - **已达成（2026-09-21）**：焦点陷阱 + 背景 `inert`（豁免读屏播报区/toast）+ 关闭归还焦点（`frontend/js/ui.js`）；页签与停靠页签 roving tabindex + 方向键 + `aria-selected` 跟随；`toast` 同步 `#srStatus`（`aria-live=polite`）；真实浏览器纯键盘走查通过。**编辑器 Tab 用于缩进，键盘出口是 Esc**（设计决定，非缺陷）。
+- [x] **G4 编辑器补齐行号 + Ctrl+Z/Ctrl+Y**
   - 与「校验错误一键跳转行」联动（跳转后高亮该行）。
-- [ ] **G5 契约与版本一致性**
+  - **已达成（2026-09-21）**：行号栏随行数与滚动同步；Ctrl/Cmd+Z 撤销 + Ctrl+Y 重做（自建快照历史，连续输入合并）；跳转后居中滚动并高亮该行；回滚后备忘条与高亮一并清理。**联动的前提是后端真能给出行号**：`nginx -t` 失败输出是多行（`[alert]` 前缀行 + 出错行 + `test failed` 汇总），原正则只匹配行尾，逐行解析并取最后一次命中后才真正可用（`backend/nginxctl.py::test_config`）。
+- [x] **G5 契约与版本一致性**
   - `API.md` 与实现零漂移；版本号单一来源 `backend/server.py::server_version` 与 tag、exe 文件名、前端持久化目录 `frontend/v{版本}/` 一致。
-- [ ] **G6 无已知 P0/P1**，且 `aoci check` 无待作者化的语义维护积压。
+  - **已达成（2026-09-21）**：`tests/test_api_contract.py` 双向比对端点集合（34/34）与成功响应顶层字段（差异时列出「仅文档 / 仅实现」）；版本单一来源校验＝`build.py` 提取值一致 + 白名单外不得硬编码 + 不得落后最新 tag。本轮修掉真实漂移：`GET /api/settings` 的 `dataDir / dataDirLocked / settingsFile`、`PUT /api/settings` 的 `dataDir`、`--data-dir` 与 `--port` 参数说明。**未单独断言**：exe 文件名与 `frontend/v{版本}/` 持久化目录的派生（记为待补）。
+- [x] **G6 无已知 P0/P1**，且 `aoci check` 无待作者化的语义维护积压。
+  - **已达成（2026-09-21）**：`SECURITY_AUDIT.md` 无未处置 P0/P1（P1 CSRF、P3 `--port` 范围校验已落地；P1「敏感操作二次确认」记为**已决策不做**，理由写在该文件）；`aoci check` 返回「✓ 可提交（五净）」、`aoci_maintain` 返回 `aligned`（`aoci.code.txt` 46 条 / 源码 46 个）。
 
 ## 四、明确不做（写进文档，避免反复讨论）
 
@@ -61,14 +70,16 @@
 
 ## 五、路线与阶段目标
 
-| 版本 | 目标 | 允许的内容 |
-|---|---|---|
-| `0.7.x` | 保命补丁：G4 行号 + Ctrl+Z、G3 焦点陷阱 / `aria-live` | 只做小改动、纯前端、低风险 |
-| `0.8.0` | 测试基建：G1 + G2 落地并接入 CI | **功能冻结版**：本阶段不新增任何功能 |
-| `0.9.x` | 冻结候选：G5 + G3 全键盘走查 + G6 | 只修 bug，不加功能 |
-| `1.0.0` | 正式版：三层目标全部达标 | 通过门槛后发布 |
+| 版本 | 目标 | 允许的内容 | 状态（2026-09-21） |
+|---|---|---|---|
+| `0.7.x` | 保命补丁：G4 行号 + Ctrl+Z、G3 焦点陷阱 / `aria-live` | 只做小改动、纯前端、低风险 | ✅ 已落地（源码） |
+| `0.8.0` | 测试基建：G1 + G2 落地并接入 CI | **功能冻结版**：本阶段不新增任何功能 | ✅ G1/G2 已落地并接入 CI；功能冻结未被破坏 |
+| `0.9.x` | 冻结候选：G5 + G3 全键盘走查 + G6 | 只修 bug，不加功能 | ✅ G5/G6 已落地、G3 全键盘走查通过 |
+| `1.0.0` | 正式版：三层目标全部达标 | 通过门槛后发布 | ⏳ 门槛已全部转绿（见第三节），**尚未发布** |
 
 **关键约束：先把保障建起来，再谈正式版。** 0.8.0 必须是功能冻结版。
+
+**本轮实际状态（2026-09-21）**：G1–G6 已全部落地并逐项提交（见 `git log`：编辑器、无障碍、后端测试基建、DOM 契约、契约与版本一致性、安全遗留项收口），但**未提升 `server_version`、未打 tag、未写 release-notes**——按用户明确要求「干完一步提交一次，不要发布版本」。发布动作（改版本号 → 写 `release-notes/<tag>.md` → `release: vX.Y.Z` 提交 → 打 tag 推送）留给下一次明确的发布指令；`build.yml` 只在 `v*.*.*` tag 推送时触发，不打 tag 就不会发版。
 
 ## 六、怎样验证进度（可复现命令）
 
@@ -89,11 +100,13 @@ grep -nE "inert|focus-trap" frontend/index.html frontend/js/*.js
 grep -rn "shell=" backend/ | wc -l
 grep -cE "alert\(|confirm\(|prompt\(" frontend/js/*.js
 
-# C 层：契约校验脚本（G2 需固化为 CI 断言）
-#   现有一次性脚本的思路：抽出 JS 中 " #id " 引用 → 与 index.html 的 id 集合求差集
+# C 层：契约校验（G2 已固化：仓库内脚本 + CI 步骤，不依赖个人脚本目录）
+python3 scripts/dom_contract.py
 
-# G1：测试是否存在
-ls tests/ && (cd . && python -m pytest tests/ -q)
+# G1：测试（双入口；标准库入口不依赖 pytest）
+python3 -m unittest discover -s tests -t . -v
+uv run --python 3.12 --with pytest python -m pytest tests/ -q
+#   门禁位置：.github/workflows/tests.yml 与 .gitea/workflows/tests.yml（tags-ignore: v*.*.*）
 
 # 对比度：颜色值在 frontend/css/style.css 的各 [data-theme] 块中，
 #   用相对亮度公式换算（暗色 --text-4 与亮色 --accent 是历史薄弱点）
@@ -126,7 +139,7 @@ aoci 二进制：`/Users/lutao/.local/bin/aoci`（`aoci version 0.1.0-rc12`，�
 
 ### B2 认知维护状态与提交口径（2026-09-21 已闭环）
 
-认知维护积压清零：`aoci.code.txt` 43 条 / 源码 43 个，`aoci check` 返回「✓ 可提交（Entries漂移/待策展/字典/格式/草稿五净）」，`aoci_maintain` 返回 `aligned`。
+认知维护积压清零：`aoci.code.txt` 46 条 / 源码 46 个（G1/G2 的测试与契约基建落地后一批维护＝新增 3 条 + 更新 9 条），`aoci check` 返回「✓ 可提交（Entries漂移/待策展/字典/格式/草稿五净）」，`aoci_maintain` 返回 `aligned`（`governance_aligned: true`、`code_drift` 全空）。测试类文件（`tests/*.py`）落在**观察集**（`observe_count: 7`）而非索引集；新增受管文件后若要继续维护，先按机器下发的 next_command 跑 `aoci scope acknowledge --repo . --reviewed-by <agent>` 完成作用域复核前移。
 
 **提交口径（rc12 实测）**：MCP 的 `aoci_update_entry` 批量 `entries` 入口在本机被客户端 Schema 校验拦下（该字段发布的 `oneOf` 分支互斥为空，任何对象都判 `not valid under any of the given schemas`），正式写入零发生。可用传输是同一管线的 CLI：
 
@@ -142,3 +155,10 @@ aoci update-entry --repo . --json --path <仓库相对路径> \
 **条目硬约束**：F ≤160 字、R ≤360 字/8 项、A ≤400 字/6 项；S 的 rune 上限按 C 档位——C7-4 ≤200、C3-1 ≤50（超限会被 `fras_s_too_long` 拒绝，只改 S 重提）。条目须陈述「文件此刻是什么」，变更历史归 Git，写成演进叙事会被 Validator 提醒。
 
 **重要**：Hermes 的 MCP 工具在会话启动时加载，接入后必须**开新会话**才会出现 `aoci_*` 工具；当前会话内无法直接调用。
+
+### B3 上下文压缩后的重载与三个实测坑（2026-09-21 记录）
+
+- **压缩后必须重载认知**：宿主注入压缩摘要后，此前模型认知一律不作数。用 `aoci_overview` 携带 `refresh_reasons=["context_compaction"]` 与**新的** `refresh_event_id` 请求完整 Whole-Index（不要设 `check_only`），原样跟随 `next_cursor` 到 `completed=true`，再提交交付确认与 Attestation（本次 43/43 条、Challenge 10/10 通过后 `cognition_verified`）。摘要里不得携带正式 Header / Entry / Challenge 正文。
+- **坑 1（会丢正文，本会话实际踩到）**：**不要**在跟随 `next_cursor` 的那次调用里附带 `host_delivery_confirmation`。服务端会据此认定「完整正文已交付」而直接进入 attestation 模式，**剩余分块正文不再下发**（表现为只返回元数据 + Challenge、`delivery_integrity: incomplete`）。正确顺序：先取完所有分块（最后一块含 `<<<AOCI_OVERVIEW_BODY_END/v1>>>` 结束标记），再单独一次调用同时提交 `host_delivery_confirmation`（`version: overview-delivery-receipt/v1`、`body_sha256`/`body_bytes` 取自分块回执、`end_marker_observed: true`）与 `model_cognition_attestation`。已误传时：用新的 `refresh_event_id` 重开一次整链（正文重发，不猜写、不用 `aoci_get_entries` 补缺块）。
+- **坑 2（提交口径再次复现）**：MCP 的 `aoci_update_entry` 批量 `entries` 入口仍被客户端 Schema 拦下（发布的 `oneOf` 分支互斥为空），与会话无关；继续用上面的 CLI `--source-sha256` 逐候选提交。另：顶层 `max_entries` 是**返回字段**不是入参，传入会被 `additionalProperties: false` 拒绝。
+- **坑 3（门禁不可放过偶发失败）**：测试套件曾间歇性失败（一次 4 失败、一次 2 失败），根因是替身脚本用 `case "$*" in *-v*)` 做子串匹配、被 `mkdtemp` 生成的含 `-v` 目录名命中，把 `nginx -t` 误判成版本查询。**测试基建的假失败会直接摧毁门禁可信度**：复现→定位→修根因→补一条用固定前缀 `-v` 稳定复现的回归用例，并连跑 40 轮确认零失败后才提交。
