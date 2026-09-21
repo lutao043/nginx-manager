@@ -17,7 +17,7 @@
 服务仅监听 `127.0.0.1`，启动命令：
 
 ```
-python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [--preview]
+python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [--preview] [--data-dir <dir>]
 ```
 
 | 参数 | 说明 |
@@ -26,6 +26,9 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 | `--nginx-path` | nginx 可执行文件绝对路径，跳过首次选择对话框 |
 | `--conf-dir` | nginx 配置目录（含 `nginx.conf`），跳过首次选择对话框 |
 | `--preview` | 预览模式：不要求 nginx 已安装/配置，仅提供前端 UI 预览与接口调试 |
+| `--data-dir` | manager 自身数据目录（`settings.json`、`backups/`、前端资源副本的存放位置），缺省按平台约定（Windows `%APPDATA%\nginx-manager`、macOS `~/Library/Application Support/nginx-manager`、Linux `$XDG_CONFIG_HOME/nginx-manager`） |
+
+**数据目录解析顺序**：`--data-dir` 参数 → 环境变量 `NGINX_MANAGER_DATA_DIR` → 默认目录下的指针文件 `data_dir.txt`（内容为自定义路径，设置页改数据目录时写入）→ 平台默认目录。前两者存在时数据目录被**锁定**：`GET /api/settings` 的 `dataDirLocked=true`，界面上的数据目录输入框置灰，`PUT /api/settings` 传 `dataDir` 会被拒绝（`409`）。另可用环境变量 `NGINX_MANAGER_DEFAULT_DATA_DIR` 整体覆盖「默认目录」（便携部署/测试用）。
 
 **运行模式判定（`main()`）：**
 
@@ -402,18 +405,21 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 
 ### GET /api/settings
 
-返回当前设置（nginxPath、confDir、port、backupRetention）。
+返回当前设置（nginxPath、confDir、port、backupRetention、数据目录）。
 
 **成功响应 200**
 
 ```json
-{ "nginxPath": "C:/nginx/nginx.exe", "confDir": "C:/nginx/conf", "port": 8310, "backupRetention": 7, "configured": true, "preview": false }
+{ "nginxPath": "C:/nginx/nginx.exe", "confDir": "C:/nginx/conf", "port": 8310, "backupRetention": 7, "configured": true, "preview": false, "dataDir": "C:/Users/me/AppData/Roaming/nginx-manager", "settingsFile": "C:/Users/me/AppData/Roaming/nginx-manager/settings.json", "dataDirLocked": false }
 ```
 
 - `configured`：nginxPath 与 confDir 是否均已配置。
 - `port`：当前监听端口（settings 未配置时返回默认 8310）。
 - `backupRetention`：自动保留备份份数（默认 7；0 表示不自动清理）。
 - `preview`：是否预览模式（`Handler.controller is None`，即未配置 nginx）。前端据此直接进入主界面并展示「预览模式」徽章；为 `true` 时 `nginxPath`/`confDir` 为 null。
+- `dataDir`：manager 自身数据目录（备份与设置的存放位置），即界面「数据目录」字段的当前值。
+- `settingsFile`：`settings.json` 的完整路径（设置页「当前配置文件」展示）。
+- `dataDirLocked`：数据目录是否由 `--data-dir` 参数或环境变量 `NGINX_MANAGER_DATA_DIR` 锁定；`true` 时界面不允许改数据目录。
 
 ### PUT /api/settings
 
@@ -422,18 +428,24 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 **请求体**
 
 ```json
-{ "nginxPath": "C:/nginx/nginx.exe", "confDir": "C:/nginx/conf", "backupRetention": 7, "port": 9000 }
+{ "nginxPath": "C:/nginx/nginx.exe", "confDir": "C:/nginx/conf", "backupRetention": 7, "port": 9000, "dataDir": "D:/nginx-manager-data" }
 ```
 
 - `backupRetention`（可选）：整数，范围 1~100（`0` 表示不自动清理）。未传则保持不变。
 - `port`（可选）：整数，范围 1~65535，修改监听端口。未传则保持不变。
   **注意**：仅保存设置不会自动重启；需再调 `POST /api/restart` 使新端口生效。
+- `dataDir`（可选）：manager 自身数据目录；与当前目录不同则迁移 `settings.json` 与 `backups/`（不覆盖目标已有文件，旧目录保留作回退）、写 `data_dir.txt` 指针文件，并在 0.5 秒后自动重启服务（响应中出现 `restarting: true` 与 `dataDir` 字段：`{"ok": true, "restarting": true, "dataDir": "...", "nginxPath": "...", "confDir": "...", "port": 8310, "backupRetention": 7}`）。数据目录被 `--data-dir`/环境变量锁定时传该字段返回 `409`。
 
 **成功响应 200**
 
 ```json
 { "ok": true, "nginxPath": "...", "confDir": "...", "port": 9000, "backupRetention": 7 }
 ```
+
+**错误**
+- `400`：`nginxPath` 或 `confDir` 缺失；`backupRetention` 不在 0~100；`port` 不在 1~65535。
+- `409`：`nginxPath` 对应文件不存在；`confDir` 无效（不含 `nginx.conf`）；目标数据目录不可创建/不可写；数据目录被启动参数或环境变量锁定。
+- `500`：迁移配置到新数据目录、或写指针文件失败。
 
 ### POST /api/pick-path
 
