@@ -11,8 +11,12 @@
 
 设计约定：
   - 所有命令通过 subprocess 执行，参数一律用列表传递，不经过 shell（防注入）。
-  - prefix 推断：取配置目录（confDir，含 nginx.conf 的目录）的父目录。
-    对标准布局成立：Windows 官方包 C:/nginx/conf、apt/brew 的 /etc/nginx 或 /usr/local/etc/nginx。
+  - prefix 推断：优先 `nginx -V` 输出的编译期 --prefix=（发行版布局下 confDir 的父目录是错的，
+    如 confDir=/etc/nginx 会推出 /etc）；取不到时退回「confDir 的父目录」启发式。
+  - pid 文件路径：优先主配置里的 `pid` 指令（发行版常用 /run/nginx.pid），
+    其次 `nginx -V` 的 --pid-path=，最后 <prefix>/logs/nginx.pid。
+    -s 系列命令一律带 -c 主配置：不带 -c 时 nginx 会读默认 conf 路径的 pid，
+    在自定义 confDir 下会操作到另一个实例。
   - 本模块不抛业务异常，方法返回 (ok: bool, data: dict) 或 (ok, message)，
     由 server.py 统一转 HTTP 响应。
 """
@@ -56,15 +60,97 @@ def _run(cmd: List[str], timeout: int = 15, cwd: Optional[str] = None) -> Tuple[
         return 124, "", "命令执行超时"
 
 
+def _strip_quoted(line: str) -> str:
+    """去掉引号包裹的字符串内容（支持 \\ 转义），避免字符串里的 {} 影响块边界判断。"""
+    out = []
+    quote = ""
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if ch in "\"'":
+            quote = ch
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 class NginxController:
     """nginx 控制核心。构造后所有方法自动适配当前平台。"""
 
     def __init__(self, nginx_path: str, conf_dir: str):
         self.nginx_path = os.path.abspath(nginx_path)
         self.conf_dir = os.path.abspath(conf_dir)
-        # prefix = confDir 的父目录；confDir 本身也可能是 prefix（如 /etc/nginx 下无子目录）
+        self.prefix = self._detect_prefix()
+
+    # ---------- 路径推断 ----------
+
+    _PID_RE = re.compile(r"^\s*pid\s+([^;]+);")
+
+    def _compile_info(self) -> dict:
+        """解析 `nginx -V` 的 configure 参数（--prefix= / --pid-path=）。
+
+        按 exe 路径 + mtime 缓存：同一进程内只起一次子进程；替身脚本或权限不足时
+        返回空字典，调用方退回启发式推算。
+        """
+        try:
+            mtime = os.path.getmtime(self.nginx_path)
+        except OSError:
+            mtime = None
+        cached = getattr(self, "_compile_cache", None)
+        if cached and cached[0] == self.nginx_path and cached[1] == mtime:
+            return cached[2]
+        info: dict = {}
+        if os.path.isfile(self.nginx_path):
+            _code, out, err = _run([self.nginx_path, "-V"], timeout=10)
+            text = (err or "") + (out or "")
+            m = re.search(r"--prefix=(\S+)", text)
+            if m:
+                info["prefix"] = os.path.abspath(m.group(1))
+            m = re.search(r"--pid-path=(\S+)", text)
+            if m:
+                info["pidPath"] = os.path.abspath(m.group(1))
+        self._compile_cache = (self.nginx_path, mtime, info)
+        return info
+
+    def _detect_prefix(self) -> str:
+        """prefix：nginx -V 的编译期 --prefix= 优先，取不到时用 confDir 的父目录。"""
+        p = self._compile_info().get("prefix")
+        if p:
+            return p
         parent = os.path.dirname(self.conf_dir)
-        self.prefix = parent if parent and parent != self.conf_dir else self.conf_dir
+        # confDir 本身也可能是 prefix（如 /etc/nginx 下无子目录）
+        return parent if parent and parent != self.conf_dir else self.conf_dir
+
+    def pid_file_path(self) -> str:
+        """pid 文件路径：主配置 pid 指令 → nginx -V 的 --pid-path → <prefix>/logs/nginx.pid。
+
+        读配置而不是硬拼 <prefix>/logs：发行版配置常写 /run/nginx.pid，
+        拼错路径会导致「在运行却报未运行」，或在 pgrep 兜底下误判到别的实例。
+        """
+        try:
+            with open(self.main_conf_path(), "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    m = self._PID_RE.match(self._strip_config_comment(line))
+                    if m:
+                        raw = m.group(1).strip().strip("'\"")
+                        if raw and raw.lower() != "off":
+                            return raw if os.path.isabs(raw) else os.path.join(self.prefix, raw)
+        except OSError:
+            pass
+        p = self._compile_info().get("pidPath")
+        if p:
+            return p
+        return os.path.join(self.prefix, "logs", "nginx.pid")
 
     # ---------- 基础命令构造 ----------
 
@@ -73,6 +159,11 @@ class NginxController:
 
     def _test_cmd(self) -> List[str]:
         return self._base_cmd() + ["-t", "-c", self.main_conf_path()]
+
+    def _signal_cmd(self, action: str) -> List[str]:
+        """-s 系列命令：必须带 -c 主配置，否则 nginx 按默认 conf 路径找 pid，
+        在自定义 confDir（如临时目录/多实例）下会操作到另一个实例或直接失败。"""
+        return self._base_cmd() + ["-s", action, "-c", self.main_conf_path()]
 
     def main_conf_path(self) -> str:
         return os.path.join(self.conf_dir, CONF_MAIN)
@@ -180,22 +271,21 @@ class NginxController:
         return procs
 
     def _posix_nginx_pid(self) -> Optional[int]:
-        """类 Unix：优先读 pid 文件，其次 pgrep。"""
-        pid_file = os.path.join(self.prefix, "logs", "nginx.pid")
-        if os.path.isfile(pid_file):
-            try:
-                with open(pid_file, "r", encoding="utf-8") as f:
-                    pid = int(f.read().strip())
-                if pid > 0 and self._pid_alive(pid):
-                    return pid
-            except (ValueError, OSError):
-                pass
-        code, out, _ = _run(["pgrep", "-f", "nginx: master process"], timeout=10)
-        if code == 0 and out.strip():
-            pids = [int(x) for x in out.split() if x.strip().isdigit()]
-            if pids:
-                return pids[0]
-        return None
+        """类 Unix：只认 pid 文件里那个「确实是 nginx」的活跃进程。
+
+        不再退回 pgrep：pgrep -f "nginx: master process" 是全机器范围的，
+        多实例/多版本共存时会把别的 nginx 当成自己的（UI 显示错误的 PID，
+        停止/重载作用到别的实例）；pid 文件才是本实例的权威来源。
+        """
+        pid_file = self.pid_file_path()
+        try:
+            with open(pid_file, "r", encoding="utf-8", errors="replace") as f:
+                pid = int(f.read().strip())
+        except (ValueError, OSError):
+            return None
+        if pid <= 0 or not self._pid_alive(pid):
+            return None
+        return pid if self._pid_is_nginx(pid) else None
 
     @staticmethod
     def _pid_alive(pid: int) -> bool:
@@ -205,8 +295,24 @@ class NginxController:
         try:
             os.kill(pid, 0)
             return True
-        except OSError:
+        except (OSError, OverflowError, ValueError):
             return False
+
+    @staticmethod
+    def _pid_is_nginx(pid: int) -> bool:
+        """pid 是否确为 nginx 进程。
+
+        pid 文件残留（崩溃/被强杀/被复用）时，PID 可能已被系统分配给别的进程；
+        直接把它当 nginx「运行中」会给出错误的 PID，信号也可能打到无关进程。
+        ps 不可用时按 True 处理（宁可保留 pid 文件，也不要误删活进程的记录）。
+        """
+        if WIN:
+            code, out, _ = _run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], timeout=10)
+            return code == 0 and "nginx" in out.lower()
+        code, out, _ = _run(["ps", "-p", str(pid), "-o", "comm="], timeout=10)
+        if code != 0 or not out.strip():
+            return True  # ps 不可用/无输出：信息不足，不做否定判断
+        return "nginx" in os.path.basename(out.strip()).lower()
 
     def detect_process(self) -> Optional[dict]:
         """检测 nginx 是否在运行。返回 {running, pid, version, matched} 或 None（未配置时）。"""
@@ -240,24 +346,32 @@ class NginxController:
 
     # ---------- 进程控制 ----------
 
-    @staticmethod
-    def _clean_stale_pid_file(prefix: str) -> None:
-        """清理空或损坏的 nginx.pid 文件。
+    def _clean_stale_pid_file(self) -> None:
+        """清理残留的 nginx.pid：空 / 非数字 / pid 已死 / pid 已被非 nginx 进程占用。
 
-        nginx 异常退出（崩溃/被强杀/断电）时 pid 文件可能残留为空或含非数字内容，
-        导致下次 nginx 启动/重载时报「invalid PID number ""」。
-        此方法在 start/reload/restart 前调用，安全删除无效文件（nginx 启动时会自动重建）。
+        nginx 异常退出（崩溃/被强杀/断电）时会残留 pid 文件，导致下次启动或
+        重载报「invalid PID number ""」；pid 被复用时更危险——它指向无关进程。
+        删掉是安全的：nginx 启动时会自动重建。
         """
-        pid_file = os.path.join(prefix, "logs", "nginx.pid")
+        pid_file = self.pid_file_path()
         if not os.path.isfile(pid_file):
             return
         try:
-            raw = open(pid_file, "r", encoding="utf-8").read().strip()
-            if not raw:
-                os.remove(pid_file)
-                return
-            int(raw)  # 验证是否为有效整数
-        except (ValueError, OSError):
+            with open(pid_file, "r", encoding="utf-8", errors="replace") as f:
+                raw = f.read().strip()
+        except OSError:
+            return
+        stale = False
+        if not raw:
+            stale = True
+        else:
+            try:
+                pid = int(raw)
+            except ValueError:
+                stale = True
+            else:
+                stale = pid <= 0 or not self._pid_alive(pid) or not self._pid_is_nginx(pid)
+        if stale:
             try:
                 os.remove(pid_file)
             except OSError:
@@ -268,7 +382,9 @@ class NginxController:
         不能用 subprocess.run（会因不退出而超时，超时后连带杀掉 master 进程树）。"""
         if not os.path.isfile(self.nginx_path):
             return False, f"nginx 可执行文件不存在: {self.nginx_path}"
-        self._clean_stale_pid_file(self.prefix)  # 清理空/损坏 pid 文件
+        if self.is_running():
+            return False, "nginx 已在运行"
+        self._clean_stale_pid_file()  # 清理空/损坏/失效 pid 文件
         # 启动前先校验配置，拿错误信息（比启动失败后再猜原因直观）
         code, result = self.test_config()
         if not result.get("ok"):
@@ -291,41 +407,59 @@ class NginxController:
             return True, "nginx 已启动"
         return False, "nginx 启动失败：请检查端口占用或错误日志"
 
-    def stop(self) -> Tuple[bool, str]:
+    def is_running(self) -> bool:
+        info = self.detect_process()
+        return bool(info and info.get("running"))
+
+    def stop(self, wait: float = 10.0) -> Tuple[bool, str]:
         """仅用 -s quit（优雅退出），不使用 -s stop（强制停止）。
 
         -s stop 会立即终止 master + 所有 worker，可能丢失处理中的请求；
         且在多实例场景下容易误伤其他 nginx 进程。
-        优雅退出失败时返回错误信息让用户决定下一步（手动排查或重启服务），
-        而非静默升级为更激进的信号。
+        quit 只是「通知」：worker 处理完存量连接前进程仍在，所以这里轮询确认真的退出，
+        而不是睡 1 秒就回报成功（否则用户以为停了，紧接着 start 报端口占用）。
         """
-        info = self.detect_process()
-        # 即使 detect 说未运行也尝试 quit：多实例场景下检测可能不准，
-        # 发送 quit 给 pid 文件指向的 master 是安全的（无进程时不报错）。
-        code, _out, err = _run(self._base_cmd() + ["-s", "quit"], timeout=15)
+        if not self.is_running():
+            return False, "nginx 未在运行"
+        pid = None if WIN else self._posix_nginx_pid()
+        code, _out, err = _run(self._signal_cmd("quit"), timeout=15)
         if code != 0:
             detail = (err or _out).strip()
-            return False, f"nginx 优雅退出失败" + (f": {detail}" if detail else "")
-        time.sleep(1.0)
-        return True, "nginx 已停止"
+            return False, "nginx 优雅退出失败" + (f": {detail}" if detail else "")
+        deadline = time.time() + max(0.0, wait)
+        while True:
+            exited = (not self._pid_alive(pid)) if pid is not None else (not self.is_running())
+            if exited:
+                self._clean_stale_pid_file()
+                return True, "nginx 已停止"
+            if time.time() >= deadline:
+                return False, f"已发送优雅退出信号，但 nginx 在 {wait:.0f} 秒内仍在运行（可能有长连接），请稍后重试"
+            time.sleep(0.3)
 
     def reload(self) -> Tuple[bool, str]:
-        info = self.detect_process()
-        if not (info and info["running"]):
+        if not self.is_running():
             return False, "nginx 未在运行"
-        self._clean_stale_pid_file(self.prefix)  # 重载前清理，避免 nginx 读空 pid 报错
-        code, _out, err = _run(self._base_cmd() + ["-s", "reload"], timeout=15)
+        self._clean_stale_pid_file()  # 重载前清理，避免 nginx 读空 pid 报错
+        code, _out, err = _run(self._signal_cmd("reload"), timeout=15)
         if code != 0:
             detail = (err or _out).strip()
             return False, f"nginx 重载失败" + (f": {detail}" if detail else "")
         return True, "nginx 配置已重载"
 
-    def restart(self) -> Tuple[bool, str]:
-        # 无论 detect 结果如何，先尝试优雅退出（多实例场景下检测可能不准，
-        # 漏停旧实例会导致 start 再开一个新实例，实例越积越多）
-        _run(self._base_cmd() + ["-s", "quit"], timeout=15)
-        time.sleep(1.5)
-        self._clean_stale_pid_file(self.prefix)  # 重启前清理
+    def restart(self, wait: float = 10.0) -> Tuple[bool, str]:
+        """先优雅退出并确认退出，再 start。
+
+        退出确认不能省：quit 后立刻 start 会在旧 master 未退时起第二个实例
+        （端口冲突或两个 master 并存）；quit 失败（例如本来没在运行）不阻断，
+        交给 start 的检测与报错兜底。
+        """
+        _run(self._signal_cmd("quit"), timeout=15)
+        deadline = time.time() + max(0.0, wait)
+        while self.is_running():
+            if time.time() >= deadline:
+                return False, "旧 nginx 实例在 %d 秒内没有退出，已取消启动（避免同时存在两个实例）" % wait
+            time.sleep(0.3)
+        self._clean_stale_pid_file()  # 重启前清理
         return self.start()
 
     # ---------- 配置树 / include 解析 ----------
@@ -438,14 +572,47 @@ class NginxController:
 
     # ---------- 错误日志 ----------
 
-    def locate_error_log(self) -> Optional[str]:
-        """定位 error.log：优先 prefix/logs/error.log，其次 confDir/logs。"""
-        candidates = [
+    _ERROR_LOG_RE = re.compile(r"^\s*error_log\s+([^;]+);")
+
+    def find_error_log_paths(self) -> List[str]:
+        """候选错误日志路径：配置 error_log 指令解析（相对 prefix）+ 默认兜底路径，去重。
+
+        与访问日志同口径：发行版常把 error_log 写到 /var/log/nginx 这类 prefix 之外的位置，
+        只看 <prefix>/logs/error.log 会把「别的文件」当成当前日志展示。
+        跳过 stderr / syslog: / memory: / off 等非文件目标。返回的路径可能尚不存在。
+        """
+        paths: List[str] = []
+
+        def _push(p: str) -> None:
+            p = os.path.normpath(os.path.abspath(p))
+            if p not in paths:
+                paths.append(p)
+
+        for fp in self.collect_included_files():
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+            except OSError:
+                continue
+            for line in content.split("\n"):
+                m = self._ERROR_LOG_RE.match(self._strip_config_comment(line))
+                if not m:
+                    continue
+                first = m.group(1).strip().split()[0].strip("'\"") if m.group(1).strip() else ""
+                if not first or first in ("off", "stderr") or first.startswith(("syslog:", "memory:")):
+                    continue
+                _push(first if os.path.isabs(first) else os.path.join(self.prefix, first))
+        for d in (
             os.path.join(self.prefix, "logs", "error.log"),
             os.path.join(self.conf_dir, "logs", "error.log"),
             os.path.join(self.conf_dir, "error.log"),
-        ]
-        for c in candidates:
+        ):
+            _push(d)
+        return paths
+
+    def locate_error_log(self) -> Optional[str]:
+        """定位 error.log：配置里声明的路径优先，其次 prefix/logs、confDir/logs 兜底。"""
+        for c in self.find_error_log_paths():
             if os.path.isfile(c):
                 return c
         return None
@@ -521,6 +688,8 @@ class NginxController:
 
     _STUB_RE = re.compile(r"^\s*stub_status\s*;")
     _LISTEN_RE = re.compile(r"^\s*listen\s+([^;]+);")
+    _SERVER_HEAD_RE = re.compile(r"^\s*server\s*\{")
+    _LOCATION_HEAD_RE = re.compile(r"^\s*location\s+(.+?)\s*(?:\{\s*)?$")
 
     @staticmethod
     def _location_path_of(expr: str) -> str:
@@ -530,25 +699,88 @@ class NginxController:
             return parts[1] if len(parts) > 1 else ""
         return parts[0] if parts else ""
 
+    @classmethod
+    def _port_of_token(cls, token: str) -> Optional[int]:
+        """listen 参数取端口：`80` / `127.0.0.1:8080` / `[::]:80`；unix: 与纯地址返回 None。"""
+        token = token.strip()
+        if not token or token.startswith("unix:"):
+            return None
+        if token.startswith("["):  # [::]:80
+            rest = token[token.find("]") + 1:] if "]" in token else ""
+            port = rest.lstrip(":")
+            return int(port) if port.isdigit() else None
+        if ":" in token:
+            token = token.rsplit(":", 1)[1]
+        return int(token) if token.isdigit() else None
+
+    def _scan_stub_status(self, lines: List[str]) -> Tuple[Optional[str], Optional[int]]:
+        """单遍扫描一个配置文件，返回 stub_status 所在 location 路径与所属 server 的 listen 端口。
+
+        用「块种类栈」跟踪上下文：stub_status 写在哪台 server，指标就该走那台 server 的
+        listen 端口。旧实现把「配置里第一个 listen」和「stub_status 所在 location」分开取，
+        多 server / 多端口配置下会抓到错误端口（表现为指标一直取不到）。
+        """
+        stack: List[dict] = []
+        for raw in lines:
+            s = _strip_quoted(self._strip_config_comment(raw))
+            kind = None
+            head = self._LOCATION_HEAD_RE.match(s)
+            if head:
+                kind = "location"
+            elif self._SERVER_HEAD_RE.match(s):
+                kind = "server"
+            elif re.match(r"^\s*http\s*\{", s):
+                kind = "http"
+            elif re.match(r"^\s*stream\s*\{", s):
+                kind = "stream"
+            elif re.match(r"^\s*upstream\s", s):
+                kind = "upstream"
+            else:
+                head = None
+            lm = self._LISTEN_RE.match(s)
+            if lm:
+                port = self._port_of_token(lm.group(1).strip().split()[0])
+                for frame in reversed(stack):
+                    if frame["kind"] == "server":
+                        if frame.get("listen") is None:
+                            frame["listen"] = port
+                        break
+            if self._STUB_RE.match(s):
+                path = port = None
+                for frame in reversed(stack):
+                    if frame["kind"] == "location" and path is None:
+                        path = frame.get("path")
+                    if frame["kind"] == "server":
+                        port = frame.get("listen")
+                        break
+                return path, port
+            for ch in s:
+                if ch == "{":
+                    frame = {"kind": kind or "block", "listen": None}
+                    if kind == "location" and head:
+                        frame["path"] = self._location_path_of(head.group(1))
+                    stack.append(frame)
+                    kind = None
+                elif ch == "}":
+                    if stack:
+                        stack.pop()
+        return None, None
+
     def find_stub_status(self) -> Optional[dict]:
         """在主配置与 include 文件中查找 stub_status 指令。
-        返回 {path, file}（path 为所在 location 的路径）或 None。
-        采用「同一文件内向上最近一个 location 行」的启发式定位，嵌套 location 场景极少，可接受。"""
+
+        返回 {path, file, port}（port 为所在 server 的 listen 端口，解析不到为 None）
+        或 None。location 路径取最近一层包围 location，嵌套 location 场景也成立。
+        """
         for fp in self.collect_included_files():
             try:
                 with open(fp, "r", encoding="utf-8", errors="replace") as f:
                     lines = f.read().split("\n")
             except OSError:
                 continue
-            current_loc: Optional[str] = None
-            for line in lines:
-                stripped = self._strip_config_comment(line)
-                lm = re.match(r"^\s*location\s+(.+?)\s*\{", stripped)
-                if lm:
-                    current_loc = self._location_path_of(lm.group(1))
-                    continue
-                if self._STUB_RE.match(stripped) and current_loc:
-                    return {"path": current_loc, "file": fp}
+            path, port = self._scan_stub_status(lines)
+            if path:
+                return {"path": path, "file": fp, "port": port}
         return None
 
     def detect_listen_port(self) -> Optional[int]:
@@ -565,19 +797,9 @@ class NginxController:
                 m = self._LISTEN_RE.match(self._strip_config_comment(line))
                 if not m:
                     continue
-                token = m.group(1).strip().split()[0]
-                if token.startswith("unix:"):
-                    continue
-                if token.startswith("["):  # [::]:80
-                    rest = token[token.find("]") + 1:] if "]" in token else ""
-                    port = rest.lstrip(":")
-                    if port.isdigit():
-                        return int(port)
-                    continue
-                if ":" in token:
-                    token = token.rsplit(":", 1)[1]
-                if token.isdigit():
-                    return int(token)
+                port = self._port_of_token(m.group(1).strip().split()[0])
+                if port:
+                    return port
         return None
 
     def fetch_stub_status(self, port: int, path: str, timeout: float = 2.0) -> Tuple[Optional[dict], Optional[str]]:

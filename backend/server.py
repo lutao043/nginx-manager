@@ -29,12 +29,12 @@ import sys
 import threading
 import time
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from nginxctl import NginxController, create_controller
-from proxymgr import ProxyManager, _pool_key
+from proxymgr import ProxyManager, _pool_key, atomic_write_text
 
 APP_NAME = "nginx-manager"
 IS_FROZEN = getattr(sys, "frozen", False)
@@ -287,8 +287,9 @@ class SettingsStore:
         return {}
 
     def save(self) -> None:
-        with open(self.path, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, ensure_ascii=False, indent=2)
+        # 原子写：settings.json 写坏会让下次启动直接读不到 nginx 配置（表现为「未配置」）
+        atomic_write_text(self.path, json.dumps(self.data, ensure_ascii=False, indent=2) + "\n",
+                          newline="\n")
 
     def get(self, key: str, default=None):
         return self.data.get(key, default)
@@ -346,8 +347,17 @@ def delete_backup(backups_dir: str, backup_id: str) -> str:
 
 def make_backup(backups_dir: str, conf_dir: str, rel_path: str) -> str:
     """备份单个文件到 backups/<时间戳>/<相对路径>，返回备份 id。
-    备份后自动清理超出 BACKUP_RETENTION 份的最旧备份。"""
+    备份后自动清理超出 BACKUP_RETENTION 份的最旧备份。
+
+    id 取秒级时间戳，但同一秒内的多次备份（连续保存/连续代理操作）会撞同一个目录——
+    旧快照会被静默覆盖，前端「回滚到 <id>」就会退回到别的时点。故 id 被占用时顺延到
+    下一个空闲秒（格式保持 `%Y%m%d_%H%M%S`，与 list_backups 的解析、按名排序兼容）。"""
+    base = datetime.now()
     backup_id = timestamp_id()
+    for offset in range(1, 60):
+        if not os.path.exists(os.path.join(backups_dir, backup_id)):
+            break
+        backup_id = (base + timedelta(seconds=offset)).strftime("%Y%m%d_%H%M%S")
     src = os.path.abspath(os.path.join(conf_dir, rel_path))
     dst = os.path.join(backups_dir, backup_id, rel_path)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -823,8 +833,10 @@ class Handler(BaseHTTPRequestHandler):
         ctl = self._require_controller()
         if ctl is None:
             return
-        port = ctl.detect_listen_port() or 80
         stub = ctl.find_stub_status()
+        # 端口必须与 stub_status 所在 server 配对：配置里第一个 listen 未必是它那台
+        # （旧实现分开取，多 server 配置下会去错误的端口抓指标，永远拿不到数据）
+        port = (stub or {}).get("port") or ctl.detect_listen_port() or 80
         if not stub:
             self._ok({"available": False, "reason": "not_configured", "port": port})
             return
@@ -917,6 +929,15 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._err(404, "接口不存在")
 
+    @staticmethod
+    def _is_state_conflict(msg: str) -> bool:
+        """运行状态类失败（未在运行 / 已在运行 / 有长连接未退出）按契约回 409，其余按 500。
+
+        nginxctl 只返回 (ok, message)，这里按语义归类，避免把「状态不对」报成「服务器错误」——
+        前端据状态码区分「可重试的状态问题」与「真故障」（API.md 已按此约定）。
+        """
+        return any(k in msg for k in ("未在运行", "已在运行", "仍在运行", "没有退出"))
+
     def _api_nginx_start(self) -> None:
         ctl = self._require_controller()
         if ctl is None:
@@ -926,7 +947,7 @@ class Handler(BaseHTTPRequestHandler):
             _invalidate_status_cache()
             self._ok({"ok": True, "message": msg})
         else:
-            self._err(500, msg)
+            self._err(409 if self._is_state_conflict(msg) else 500, msg)
 
     def _api_nginx_stop(self) -> None:
         ctl = self._require_controller()
@@ -937,7 +958,7 @@ class Handler(BaseHTTPRequestHandler):
             _invalidate_status_cache()
             self._ok({"ok": True, "message": msg})
         else:
-            self._err(409, msg)
+            self._err(409 if self._is_state_conflict(msg) else 500, msg)
 
     def _api_nginx_reload(self) -> None:
         ctl = self._require_controller()
@@ -948,7 +969,7 @@ class Handler(BaseHTTPRequestHandler):
             _invalidate_status_cache()
             self._ok({"ok": True, "message": msg})
         else:
-            self._err(500, msg)
+            self._err(409 if self._is_state_conflict(msg) else 500, msg)
 
     def _api_nginx_restart(self) -> None:
         ctl = self._require_controller()
@@ -959,7 +980,7 @@ class Handler(BaseHTTPRequestHandler):
             _invalidate_status_cache()
             self._ok({"ok": True, "message": msg})
         else:
-            self._err(500, msg)
+            self._err(409 if self._is_state_conflict(msg) else 500, msg)
 
     def _api_config_test(self) -> None:
         ctl = self._require_controller()
@@ -1022,16 +1043,14 @@ class Handler(BaseHTTPRequestHandler):
         for rel in staged:
             abs_path = self._conf_abs(rel)
             os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-            with open(abs_path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(files_map[rel])
+            atomic_write_text(abs_path, files_map[rel])
 
         ok, result = ctl.test_config()
         if not ok:
             # 校验失败：恢复原状
             for rel, content in current_map.items():
                 abs_path = self._conf_abs(rel)
-                with open(abs_path, "w", encoding="utf-8", newline="\n") as f:
-                    f.write(content)
+                atomic_write_text(abs_path, content)
             self._err(409, "回滚后 nginx -t 校验失败，已恢复原状", result.get("output", ""))
             return
         self._ok({"ok": True, "restored": staged, "test": result, "preBackupIds": pre_backup_ids})
@@ -1095,8 +1114,9 @@ class Handler(BaseHTTPRequestHandler):
         if do_backup:
             backup_id = make_backup(self.data_dirs["backups"], ctl.conf_dir, rel)
         try:
-            with open(abs_path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(content)
+            # 原子写 + 沿用文件既有行尾：非原子写在中途失败（磁盘满/进程被杀）
+            # 会留下半截 nginx.conf；固定写 LF 会把 Windows 用户整份配置改成 LF。
+            atomic_write_text(abs_path, content)
         except OSError as e:
             self._err(500, f"写入文件失败: {e}")
             return
@@ -1276,8 +1296,9 @@ class Handler(BaseHTTPRequestHandler):
             if "不存在" in err or "不在池中" in err:
                 status = 404
             elif ("备选" in err or "校验" in err or "激活" in err or "已在池中" in err
-                  or "没有代理" in err or "已存在" in err or "引用" in err or "http 块" in err
-                  or "server 块" in err):
+                  or "没有代理" in err or "已存在" in err or "引用" in err
+                  or "http 块" in err or "server 块" in err
+                  or "未建模" in err or "单行写法" in err):
                 status = 409
             self._err(status, err)
             return True
@@ -1440,12 +1461,13 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_json_body()
         path = str(body.get("path", ""))
         targets = body.get("targets")
+        active = str(body.get("active") or "")
         if not isinstance(targets, list):
             self._err(400, "targets 必须为数组")
             return
 
         def mutate(pm):
-            return pm.update_targets(path, targets)
+            return pm.update_targets(path, targets, active)
         if self._proxy_apply(pm, mutate, path):
             return
 
@@ -1554,12 +1576,15 @@ def _port_arg(value: str) -> int:
 # ---------- 入口 ----------
 
 def find_workspace_nginx() -> dict:
-    """开发默认：若工作区根目录存在 nginx-1.30.4/（标准 Windows 版布局），
-    直接作为管理对象，跳过首次对话框。返回 {nginxPath, confDir} 或空 dict。"""
-    exe = os.path.join(PROJECT_ROOT, "nginx-1.30.4", "nginx.exe")
-    conf_dir = os.path.join(PROJECT_ROOT, "nginx-1.30.4", "conf")
-    if os.path.isfile(exe) and os.path.isfile(os.path.join(conf_dir, "nginx.conf")):
-        return {"nginxPath": exe, "confDir": conf_dir}
+    """开发默认：若工作区根目录存在 nginx-1.30.4/（Windows 官方版布局 nginx.exe，
+    或 Unix 源码构建布局 sbin/nginx），直接作为管理对象，跳过首次对话框。
+    返回 {nginxPath, confDir} 或空 dict。"""
+    base = os.path.join(PROJECT_ROOT, "nginx-1.30.4")
+    conf_dir = os.path.join(base, "conf")
+    for rel in ("nginx.exe", os.path.join("sbin", "nginx")):
+        exe = os.path.join(base, rel)
+        if os.path.isfile(exe) and os.path.isfile(os.path.join(conf_dir, "nginx.conf")):
+            return {"nginxPath": exe, "confDir": conf_dir}
     return {}
 
 

@@ -24,9 +24,13 @@ from typing import List, Optional
 
 # 行尾别名注释：`proxy_pass http://a; # 别名`（'#' 前须有空白，避免误伤 URL 中的 '#'）
 PROXY_PASS_RE = re.compile(r"^(\s*)(#\s*)?proxy_pass\s+(.+?);\s*(?:#\s*(.*?))?\s*$")
-LOCATION_RE = re.compile(r"^(\s*)location\s+(.+?)\s*\{")
-UPSTREAM_RE = re.compile(r"^(\s*)upstream\s+([A-Za-z0-9_\-]+)\s*\{")
-HTTP_RE = re.compile(r"^(\s*)http\s*\{")
+# location/upstream/http 头：开括号可在本行，也可在下一行（由 _open_brace_line 确认）。
+# 用 \s*\{?\s*$ 锚定行尾（而非非贪婪停在第一个 {），否则正则型 location（location ~ ^/a{2}$）
+# 会被截断成 ^/a。
+LOCATION_RE = re.compile(r"^(\s*)location\s+(.+?)\s*(?:\{\s*)?$")
+UPSTREAM_RE = re.compile(r"^(\s*)upstream\s+([A-Za-z0-9_\-]+)\s*(?:\{.*)?$")
+HTTP_RE = re.compile(r"^(\s*)http\s*\{?\s*$")
+_LOCATION_RE = LOCATION_RE
 
 
 class ProxyBlock:
@@ -40,6 +44,19 @@ class ProxyBlock:
         self.pp_active: Optional[int] = None  # 激活行索引
         self.pp_values: dict = {}          # 行索引 -> url
         self.pp_comments: dict = {}        # 行索引 -> 行尾别名注释
+        self.single_line = False           # 单行写法（location/proxy_pass/} 同行）
+        self.extra: List[dict] = []        # 单行块内同行的其余 proxy_pass 条目
+
+    @property
+    def items(self) -> List[dict]:
+        """块内全部 proxy_pass 条目（行级 + 单行块同行追加），按出现顺序。
+
+        idx 为行索引；单行块内的追加项没有独立行号（None），调用方需自行判断。
+        """
+        out = [{"idx": i, "url": self.pp_values[i], "alias": self.pp_comments.get(i, ""),
+                "commented": i != self.pp_active} for i in sorted(self.pp_lines)]
+        out.extend(self.extra)
+        return out
 
     @property
     def active(self) -> Optional[str]:
@@ -48,14 +65,18 @@ class ProxyBlock:
     @property
     def targets(self) -> List[str]:
         """按配置顺序返回全部目标地址。"""
-        return [self.pp_values[i] for i in sorted(self.pp_lines)]
+        return [it["url"] for it in self.items]
 
     def alias_of(self, url: str) -> str:
         """返回该 url 的行尾别名注释（多行同 url 时取第一个非空）。"""
-        for idx in sorted(self.pp_lines):
-            if self.pp_values.get(idx) == url and self.pp_comments.get(idx):
-                return self.pp_comments[idx]
+        for it in self.items:
+            if it["url"] == url and it["alias"]:
+                return it["alias"]
         return ""
+
+
+# 单行块内联 proxy_pass 抽取
+_INLINE_PP_RE = re.compile(r"(#\s*)?proxy_pass\s+([^;{}]+);")
 
 
 def _strip_inline_comment(line: str) -> str:
@@ -69,51 +90,147 @@ def _strip_inline_comment(line: str) -> str:
     return "".join(out)
 
 
+def _strip_quoted(line: str) -> str:
+    """去掉引号包裹的字符串内容（支持 \\ 转义）。
+
+    块边界统计必须先剔除字符串：`add_header X-E "}";` 或 `return 200 '{"a":1}';`
+    里的括号会让 _count_braces 提前判定块结束，进而把新块插进 server 内部。
+    先剔字符串再剥注释：字符串里的 '#' 也不会被误当成注释起点。
+    """
+    out = []
+    quote = ""
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if ch in "\"'":
+            quote = ch
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _count_braces(lines: List[str], start: int) -> int:
-    """从 start 行开始统计大括号平衡，返回块结束行索引（含）。"""
+    """从 start 行开始统计大括号平衡，返回块结束行索引（含）。
+
+    seen_open 用于兼容「关键字行与 { 分行」的写法（location /x 换行 {）：
+    只有见过开括号后才认为 depth<=0 是块结束，否则单行注释或关键字行会被误判成块尾。
+    """
     depth = 0
+    seen_open = False
     for i in range(start, len(lines)):
-        stripped = _strip_inline_comment(lines[i])
+        stripped = _strip_quoted(_strip_inline_comment(lines[i]))
         depth += stripped.count("{") - stripped.count("}")
-        if depth <= 0:
+        if "{" in stripped:
+            seen_open = True
+        if seen_open and depth <= 0:
             return i
     return len(lines) - 1
 
 
+def _is_single_line(lines: List[str], start: int, end: int) -> bool:
+    """块的开闭括号与内容全在同一行（工具的行级模型无法安全改写这类块）。"""
+    return start == end
+
+
+def _open_brace_line(lines: List[str], idx: int) -> Optional[int]:
+    """返回含该块开括号的行索引：本行有 { 就是本行，否则看下一个非空非注释行。"""
+    if "{" in _strip_quoted(_strip_inline_comment(lines[idx])):
+        return idx
+    j = idx + 1
+    while j < len(lines):
+        s = _strip_inline_comment(lines[j]).strip()
+        if not s:
+            j += 1
+            continue
+        if s.startswith("#"):
+            j += 1
+            continue
+        return j if s == "{" else None
+    return None
+
+
+def _location_path(expr: str) -> str:
+    """从 location 关键字后的表达式提取路径（跳过 = ~ ~* ^~ 修饰符）。
+
+    单行块时 expr 会含 `{ ... }` 的正文，这里只取首个词（或修饰符后的词）即可。
+    """
+    parts = expr.split()
+    if parts and parts[0] in ("=", "~", "~*", "^~"):
+        return parts[1] if len(parts) > 1 else ""
+    return parts[0] if parts else ""
+
+
 def parse_proxies(content: str) -> List[ProxyBlock]:
-    """解析配置文本，返回所有包含 proxy_pass 的 location 块（按出现顺序）。"""
+    """解析配置文本，返回所有包含 proxy_pass 的 location 块（按出现顺序）。
+
+    兼容三种写法：常规多行块、`location /x` 与 `{` 分行、以及 `location /x { ... }` 单行块
+    （单行块可识别/展示，但行级改写会被拒绝，见 _render_* 调用点）。
+    """
     lines = content.split("\n")
     blocks: List[ProxyBlock] = []
     i = 0
     while i < len(lines):
-        line = lines[i]
+        line = _strip_inline_comment(lines[i]).rstrip()
         if line.lstrip().startswith("#"):
             i += 1
             continue
-        m = LOCATION_RE.match(line)
+        m = _LOCATION_RE.match(line)
         if not m:
             i += 1
             continue
+        if _open_brace_line(lines, i) is None:
+            i += 1
+            continue
         path_expr = m.group(2).strip()
-        # 提取 location 路径：跳过 = ~ ~* ^~ 修饰符
-        parts = path_expr.split()
-        if parts and parts[0] in ("=", "~", "~*", "^~"):
-            path = parts[1] if len(parts) > 1 else ""
-        else:
-            path = parts[0] if parts else ""
+        path = _location_path(path_expr)
         end = _count_braces(lines, i)
         # 块内扫描 proxy_pass
         block = ProxyBlock(path, i, end)
-        for j in range(i + 1, end):
-            pm = PROXY_PASS_RE.match(lines[j])
-            if pm:
-                url = pm.group(3).strip()
-                block.pp_lines.append(j)
-                block.pp_values[j] = url
-                if pm.group(4):
-                    block.pp_comments[j] = pm.group(4).strip()
-                if not pm.group(2):  # 未注释 → 激活
-                    block.pp_active = j
+        if end == i:
+            # 单行块：location 行内同时含 {、proxy_pass、}
+            body = lines[i]
+            cut = body.find("{")
+            body = body[cut + 1:] if cut >= 0 else ""
+            close = body.rfind("}")
+            if close >= 0:
+                body = body[:close]
+            for sm in _INLINE_PP_RE.finditer(body):
+                commented = bool(sm.group(1))
+                url = sm.group(2).strip()
+                tail = body[sm.end():]
+                am = re.match(r"\s*#\s*([^;]*)$", tail)
+                alias = am.group(1).strip() if am else ""
+                if not block.pp_lines:
+                    block.pp_lines.append(i)
+                    block.pp_values[i] = url
+                    if alias:
+                        block.pp_comments[i] = alias
+                    if not commented:
+                        block.pp_active = i
+                else:
+                    block.extra.append({"url": url, "alias": alias, "commented": commented})
+            block.single_line = True
+        else:
+            for j in range(i + 1, end + 1):
+                pm = PROXY_PASS_RE.match(lines[j])
+                if pm:
+                    url = pm.group(3).strip()
+                    block.pp_lines.append(j)
+                    block.pp_values[j] = url
+                    if pm.group(4):
+                        block.pp_comments[j] = pm.group(4).strip()
+                    if not pm.group(2):  # 未注释 → 激活
+                        block.pp_active = j
         if block.pp_lines:
             blocks.append(block)
         i = end + 1
@@ -122,15 +239,38 @@ def parse_proxies(content: str) -> List[ProxyBlock]:
 
 # ---------- upstream 解析 ----------
 
+def _block_statements(lines: List[str], start: int, end: int) -> List[str]:
+    """返回块内语句文本（已剥注释）；单行块（start==end）按 ; 拆分。
+
+    用于识别工具"认识"的指令（method / server）与其余未建模的手工指令。
+    """
+    if start == end:
+        raw = _strip_inline_comment(lines[start])
+        body = raw[raw.find("{") + 1:] if "{" in raw else ""
+        if "}" in body:
+            body = body[:body.rfind("}")]
+        return [x.strip() for x in body.split(";") if x.strip()]
+    out: List[str] = []
+    for j in range(start + 1, end + 1):
+        s = _strip_inline_comment(lines[j]).strip()
+        if not s or s == "}":
+            continue
+        s = s.rstrip("}").strip()
+        if s:
+            out.append(s)
+    return out
+
+
 def parse_upstreams(content: str) -> List[dict]:
     """解析配置文本中全部 upstream 块（按出现顺序）。
-    返回 [{name, indent, start, end, method, servers}]，servers 为
-    [{address, params}]（params 为原始参数词列表，解析交给 _server_info）。"""
+    返回 [{name, indent, start, end, method, servers, single_line, unmodeled}]，
+    servers 为 [{address, params}]（params 为原始参数词列表，解析交给 _server_info）；
+    unmodeled 为工具未建模的手工指令/注释行（保存前据此拒绝整块重写）。"""
     lines = content.split("\n")
     blocks: List[dict] = []
     i = 0
     while i < len(lines):
-        line = lines[i]
+        line = _strip_inline_comment(lines[i]).rstrip()
         if line.lstrip().startswith("#"):
             i += 1
             continue
@@ -138,21 +278,24 @@ def parse_upstreams(content: str) -> List[dict]:
         if not m:
             i += 1
             continue
+        if _open_brace_line(lines, i) is None:
+            i += 1
+            continue
         end = _count_braces(lines, i)
         block = {"name": m.group(2), "indent": m.group(1) or "", "start": i, "end": end,
-                 "method": "round_robin", "servers": []}
-        for j in range(i + 1, end):
-            s = _strip_inline_comment(lines[j]).strip()
-            if not s or s.startswith("#"):
+                 "method": "round_robin", "servers": [], "single_line": end == i,
+                 "unmodeled": []}
+        for st in _block_statements(lines, i, end):
+            if st in ("least_conn", "ip_hash"):
+                block["method"] = st
                 continue
-            if s in ("least_conn;", "ip_hash;"):
-                block["method"] = s[:-1]
-                continue
-            sm = re.match(r"^server\s+(.+?);\s*$", s)
+            sm = re.match(r"^server\s+(.+?);?$", st)
             if sm:
                 parts = sm.group(1).split()
                 if parts:
                     block["servers"].append({"address": parts[0], "params": parts[1:]})
+                continue
+            block["unmodeled"].append(st)
         blocks.append(block)
         i = end + 1
     return blocks
@@ -200,11 +343,12 @@ def _find_http_block(lines: List[str]) -> Optional[tuple]:
     """找第一个顶层 http 块，返回 (start, end, indent)；不存在返回 None。"""
     i = 0
     while i < len(lines):
-        if lines[i].lstrip().startswith("#"):
+        line = _strip_inline_comment(lines[i]).rstrip()
+        if line.lstrip().startswith("#"):
             i += 1
             continue
-        m = HTTP_RE.match(lines[i])
-        if m:
+        m = HTTP_RE.match(line)
+        if m and _open_brace_line(lines, i) == i:
             return i, _count_braces(lines, i), m.group(1) or ""
         i += 1
     return None
@@ -213,7 +357,7 @@ def _find_http_block(lines: List[str]) -> Optional[tuple]:
 # ---------- 修改操作 ----------
 
 _URL_RE = re.compile(
-    r"^(?:https?://[a-zA-Z0-9._\-]+(?::\d{1,5})?(?:/[^\s{}]*)?|unix:/[^\s{}]+)$"
+    r"^(?:https?://[a-zA-Z0-9._\-]+(?::\d{1,5})?(?:/[^\s{};#\"']*)?|unix:/[^\s{};#\"']+)$"
 )
 
 
@@ -234,8 +378,10 @@ def _normalize_target(target: str) -> Optional[str]:
 
 
 def _normalize_path(path: str) -> Optional[str]:
+    """校验 location 路径。分号/井号/引号/反斜杠会截断或改写配置行，一律拒绝
+    （此前只挡空白和花括号，`/a;b` 会写出 `location /a;b {` 这类需要靠 -t 兜底的配置）。"""
     p = path.strip()
-    if not p.startswith("/") or re.search(r"\s", p) or "{" in p or "}" in p:
+    if not p.startswith("/") or re.search(r"[\s{};#\"'\\]", p):
         return None
     return p
 
@@ -302,10 +448,13 @@ def _render_switch(lines: List[str], block: ProxyBlock, target: str) -> bool:
     return True
 
 
-def _render_targets(lines: List[str], block: ProxyBlock, targets: List[str]) -> Optional[str]:
-    """按新 targets 列表重写块内 proxy_pass 行（激活项不注释，其余注释）。
-    若原激活目标不在新列表，则激活第一个。返回新的激活 url；失败返回 None。"""
-    active_url = block.active
+def _render_targets(lines: List[str], block: ProxyBlock, targets: List[str],
+                    active: Optional[str] = None) -> Optional[str]:
+    """重写块内 proxy_pass 行：targets 为目标列表，active 指定激活目标（None 表示保持原激活）。
+
+    返回值是实际写入的激活目标；返回 None 表示改写失败。
+    """
+    active_url = active if active in targets else block.active
     if active_url not in targets:
         active_url = targets[0]
 
@@ -337,22 +486,35 @@ def _block_text(block: ProxyBlock, lines: List[str]) -> str:
     return "\n".join(lines[block.start : block.end + 1])
 
 
+# 顶层 server 块头（追加目标必须是多行块：单行块无法在其中插入内容）
+_SERVER_HEAD_RE = re.compile(r"^\s*server\s*\{?\s*$")
+
+
 def _find_insert_point(lines: List[str]) -> Optional[int]:
-    """找最后一个顶层 server 块的结束 } 行索引（代理追加到该块内）。"""
-    server_starts = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if line.lstrip().startswith("#"):
-            i += 1
-            continue
-        if re.match(r"^\s*server\s*\{", line):
-            server_starts.append(i)
-        i += 1
-    if not server_starts:
+    """找 http 块内最后一个多行 server 块的结束 } 行索引（代理/状态页追加进该块）。
+
+    只在 http 块范围内查找并跟踪嵌套深度：直接全文件搜 `server {` 会命中
+    stream{} 里的四层 server 块，把 http 专用指令写进 stream（语法非法）。
+    """
+    http = _find_http_block(lines)
+    if http is None:
         return None
-    last_start = server_starts[-1]
-    return _count_braces(lines, last_start)
+    http_start, http_end = http[0], http[1]
+    depth = 0
+    last: Optional[int] = None
+    i = http_start
+    while i <= http_end and i < len(lines):
+        s = _strip_quoted(_strip_inline_comment(lines[i]))
+        if depth == 1 and _SERVER_HEAD_RE.match(s):
+            block_end = _count_braces(lines, i)
+            if block_end > i and block_end <= http_end:
+                last = block_end  # 单行 server 块跳过（无法安全插入）
+            depth += s.count("{") - s.count("}")
+            i = block_end + 1 if block_end > i else i + 1
+            continue
+        depth += s.count("{") - s.count("}")
+        i += 1
+    return last
 
 
 # 场景模板：追加在标准三行 proxy_set_header 之后的附加指令（与 API.md 契约一致）
@@ -414,7 +576,12 @@ def _normalize_upstream_servers(raw) -> Optional[List[dict]]:
             return None
         if not 1 <= w <= 100:
             return None
-        extra = [str(x) for x in (s.get("extra") or []) if _EXTRA_PARAM_RE.fullmatch(str(x))]
+        extra = []
+        for x in (s.get("extra") or []):
+            xs = str(x)
+            if not _EXTRA_PARAM_RE.fullmatch(xs):
+                return None  # 非法参数词：拒绝而不是静默丢弃（静默丢弃等于悄悄改配置）
+            extra.append(xs)
         out.append({"address": addr, "weight": w, "backup": bool(s.get("backup")),
                     "down": bool(s.get("down")), "extra": extra})
     return out
@@ -435,13 +602,56 @@ def _proxy_template(path: str, target: str, template: str = "standard") -> str:
     return text
 
 
+def read_line_ending(path: str) -> str:
+    """探测文件现有行尾风格（CRLF / LF）。
+
+    读文本时通用换行会把 CRLF 归一成 LF，若写回也一律用 LF，"内容没改"的保存
+    也会静默把整个文件改成 LF（Windows 用户用记事本编辑过的配置很常见）。
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(65536)
+    except OSError:
+        return "\n"
+    crlf = head.count(b"\r\n")
+    lf = head.count(b"\n") - crlf
+    return "\r\n" if crlf > 0 and crlf >= lf else "\n"
+
+
+def atomic_write_text(path: str, content: str, newline: Optional[str] = None) -> None:
+    """原子写文本：同目录临时文件 + fsync + os.replace。
+
+    - 避免"截断后写一半"：崩溃/磁盘满时目标文件要么是旧内容要么是新内容；
+    - newline 为 None 时自动沿用文件现有行尾风格，保持用户既有约定。
+    """
+    style = read_line_ending(path) if newline is None else newline
+    if style == "\r\n" and "\r" not in content:
+        content = content.replace("\n", "\r\n")
+    tmp = "%s.tmp-%d" % (path, os.getpid())
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
 class ProxyManager:
     """对单个配置文件做代理增删改；所有操作返回 (ok, result)。"""
+
+    SINGLE_LINE_MSG = "该 location 为单行写法（location 与 } 同行），请用配置编辑器手工修改"
 
     def __init__(self, conf_path: str):
         self.conf_path = conf_path
         self.content = self._read()
         self.blocks: List[ProxyBlock] = []
+        self._refresh()  # 构造即解析：调用方（server 每请求新建实例）直接 add 时查重才有效
 
     def _read(self) -> str:
         with open(self.conf_path, "r", encoding="utf-8", errors="replace") as f:
@@ -456,8 +666,7 @@ class ProxyManager:
         self.blocks = parse_proxies(self.content)
 
     def _write(self, content: str) -> None:
-        with open(self.conf_path, "w", encoding="utf-8", newline="\n") as f:
-            f.write(content)
+        atomic_write_text(self.conf_path, content)
 
     def list_proxies(self) -> List[dict]:
         self.reload()
@@ -505,13 +714,14 @@ class ProxyManager:
         if not path or not target:
             return {"ok": False, "error": "path 或 target 非法"}
         lines = self.content.split("\n")
-        # 查重
+        # 查重（先刷新：实例可能刚构造或 content 被外部改动）
+        self._refresh()
         for b in self.blocks:
             if b.path == path:
                 return {"ok": False, "error": f"代理已存在: {path}"}
         insert_at = _find_insert_point(lines)
         if insert_at is None:
-            return {"ok": False, "error": "未找到 server 块，无法添加代理"}
+            return {"ok": False, "error": "未找到可写入的 http server 块（缺失或为单行写法），请用配置编辑器手工添加"}
         block = _proxy_template(path, target, template).rstrip("\n")
         lines.insert(insert_at, block)
         self.content = "\n".join(lines)
@@ -530,6 +740,8 @@ class ProxyManager:
         block = next((b for b in self.blocks if b.path == path), None)
         if block is None:
             return {"ok": False, "error": f"代理不存在: {path}"}
+        if block.single_line:
+            return {"ok": False, "error": self.SINGLE_LINE_MSG}
         if target not in block.targets:
             return {"ok": False, "error": f"目标不在备选列表中: {target}"}
         if not _render_switch(lines, block, target):
@@ -537,7 +749,16 @@ class ProxyManager:
         self.content = "\n".join(lines)
         return {"ok": True}
 
-    def update_targets(self, path: str, targets: List[str]) -> dict:
+    def update_targets(self, path: str, targets: List[str], active: str = "") -> dict:
+        """整体替换备选目标列表；active 非空时同时指定激活目标（前端「编辑备选」里的单选）。
+
+        不传 active 时保持原激活目标（原激活已不在列表则退回第一条）。
+        """
+        want_active = None
+        if active:
+            want_active = _normalize_target(active)
+            if not want_active:
+                return {"ok": False, "error": f"active 非法: {active}"}
         norm, seen_keys = [], set()
         for t in targets:
             nt = _normalize_target(t)
@@ -555,7 +776,9 @@ class ProxyManager:
         block = next((b for b in self.blocks if b.path == path), None)
         if block is None:
             return {"ok": False, "error": f"代理不存在: {path}"}
-        new_active = _render_targets(lines, block, norm)
+        if block.single_line:
+            return {"ok": False, "error": self.SINGLE_LINE_MSG}
+        new_active = _render_targets(lines, block, norm, want_active)
         if new_active is None:
             return {"ok": False, "error": "更新备选失败"}
         self.content = "\n".join(lines)
@@ -567,16 +790,18 @@ class ProxyManager:
         block = next((b for b in self.blocks if b.path == path), None)
         if block is None:
             return {"ok": False, "error": f"代理不存在: {path}"}
-        # 删除整个 location 块，并连带清理前导空行；
-        # 若紧邻的上一行是该块的说明注释（# 开头且缩进不小于 location 行），一并删除。
+        # 删除整个 location 块；紧邻的上一行若属于该块的说明注释（连续、缩进不小于
+        # location 行、中间没有空行）一并删除。注意不能跨空行往上找注释——
+        # 那会删掉属于上一个块的注释（nginx 不报错，属静默丢内容）。
         del_start = block.start
-        while del_start > 0 and lines[del_start - 1].strip() == "":
-            del_start -= 1
-        if del_start > 0:
+        loc_indent = len(lines[block.start]) - len(lines[block.start].lstrip())
+        while del_start > 0:
             prev = lines[del_start - 1]
-            loc_indent = len(lines[block.start]) - len(lines[block.start].lstrip())
-            if prev.lstrip().startswith("#") and (len(prev) - len(prev.lstrip())) >= loc_indent:
+            if prev.strip() and prev.lstrip().startswith("#") \
+                    and (len(prev) - len(prev.lstrip())) >= loc_indent:
                 del_start -= 1
+            else:
+                break
         del lines[del_start : block.end + 1]
         self.content = "\n".join(lines)
         return {"ok": True}
@@ -597,9 +822,8 @@ class ProxyManager:
         out: List[dict] = []
         index: dict = {}
         for b in self.blocks:
-            for idx in b.pp_lines:
-                url = b.pp_values[idx]
-                alias = b.pp_comments.get(idx, "")
+            for it in b.items:
+                url, alias = it["url"], it["alias"]
                 key = _pool_key(url)
                 item = index.get(key)
                 if item is None:
@@ -620,11 +844,13 @@ class ProxyManager:
         self._refresh()
         key = _pool_key(target)
         for b in self.blocks:
-            for url in b.pp_values.values():
-                if _pool_key(url) == key:
-                    return {"ok": False, "error": f"目标已在池中（存在等价写法 {url}）: {target}"}
+            for it in b.items:
+                if _pool_key(it["url"]) == key:
+                    return {"ok": False, "error": f"目标已在池中（存在等价写法 {it['url']}）: {target}"}
         if not self.blocks:
             return {"ok": False, "error": "当前配置中没有代理，无法添加目标地址（请先添加代理）"}
+        if any(b.single_line for b in self.blocks):
+            return {"ok": False, "error": self.SINGLE_LINE_MSG}
         lines = self.content.split("\n")
         # 依块尾倒序插入，避免行号偏移；新行放在每块最后一个 proxy_pass 行之后
         for b in sorted(self.blocks, key=lambda x: x.end, reverse=True):
@@ -644,6 +870,8 @@ class ProxyManager:
         hits = [(b, idx) for b in self.blocks for idx in b.pp_lines if _pool_key(b.pp_values[idx]) == key]
         if not hits:
             return {"ok": False, "error": f"目标不在池中: {target}"}
+        if any(b.single_line for b, _ in hits):
+            return {"ok": False, "error": self.SINGLE_LINE_MSG}
         lines = self.content.split("\n")
         for _, idx in hits:
             m = PROXY_PASS_RE.match(lines[idx])
@@ -663,12 +891,16 @@ class ProxyManager:
         idxs: List[int] = []
         for b in self.blocks:
             active_here = b.active is not None and _pool_key(b.active) == key
-            for idx in b.pp_lines:
-                if _pool_key(b.pp_values[idx]) == key:
+            for it in b.items:
+                if _pool_key(it["url"]) == key:
+                    if b.single_line:
+                        # 单行块整行即一个 location，删行等于删块，必须拒绝
+                        return {"ok": False, "error": self.SINGLE_LINE_MSG}
                     if active_here:
                         return {"ok": False,
                                 "error": f"目标在代理 {b.path} 中处于激活状态，请先切换其他目标后再删除"}
-                    idxs.append(idx)
+                    if it.get("idx") is not None:
+                        idxs.append(it["idx"])
         if not idxs:
             return {"ok": False, "error": f"目标不在池中: {target}"}
         lines = self.content.split("\n")
@@ -690,8 +922,8 @@ class ProxyManager:
         # 引用统计：代理目标（激活+备选）中 http://<name> 的 location 路径
         used: dict = {}
         for b in self.blocks:
-            for idx in b.pp_lines:
-                m = re.match(r"^https?://([^/?#]+)", b.pp_values[idx], re.IGNORECASE)
+            for it in b.items:
+                m = re.match(r"^https?://([^/?#]+)", it["url"], re.IGNORECASE)
                 if m:
                     used.setdefault(m.group(1).lower(), set()).add(b.path)
         return [{
@@ -713,6 +945,11 @@ class ProxyManager:
             return {"ok": False, "error": "服务器列表非法（至少 1 条，地址合法且不重复，weight 为 1~100 整数）"}
         lines = self.content.split("\n")
         existing = next((u for u in parse_upstreams(self.content) if u["name"] == name), None)
+        if existing and existing.get("unmodeled"):
+            first = existing["unmodeled"][0]
+            return {"ok": False,
+                    "error": f"该 upstream 含工具未建模的手工指令或注释（{first}），"
+                             f"整块重写会丢失它们；请在「配置文件」页签里手工修改"}
         indent = existing["indent"] if existing else "    "
         text = _render_upstream_block(indent, name, method, norm)
         if existing:
@@ -730,8 +967,8 @@ class ProxyManager:
         self._refresh()
         # 引用检查：任何代理的激活/备选目标指向该 upstream 时拒绝删除
         for b in self.blocks:
-            for idx in b.pp_lines:
-                m = re.match(r"^https?://([^/?#]+)", b.pp_values[idx], re.IGNORECASE)
+            for it in b.items:
+                m = re.match(r"^https?://([^/?#]+)", it["url"], re.IGNORECASE)
                 if m and m.group(1).lower() == name.lower():
                     return {"ok": False, "error": f"upstream 正在被代理 {b.path} 引用，请先切换或删除该代理"}
         u = next((x for x in parse_upstreams(self.content) if x["name"] == name), None)
@@ -752,12 +989,15 @@ class ProxyManager:
             return {"ok": False, "error": "路径非法"}
         lines = self.content.split("\n")
         for line in lines:
-            m = LOCATION_RE.match(line)
-            if m and m.group(2).split()[-1] == path:
+            m = LOCATION_RE.match(_strip_inline_comment(line).rstrip())
+            if not m:
+                continue
+            expr = m.group(2).strip()
+            if _location_path(expr) == path:
                 return {"ok": True, "unchanged": True}
         insert_at = _find_insert_point(lines)
         if insert_at is None:
-            return {"ok": False, "error": "未找到 server 块，无法开启状态页"}
+            return {"ok": False, "error": "未找到可写入的 http server 块（缺失或为单行写法），请用配置编辑器手工添加"}
         block = (
             f"        location {path} {{\n"
             f"            stub_status;\n"
