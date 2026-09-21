@@ -94,4 +94,5 @@ python build.py        # 产物 dist/nginx-manager-v{版本}.exe（单文件）
 
 - [API.md](API.md) — 前后端契约（接口唯一权威源）
 - [VIBE_CODING_GUIDE.md](VIBE_CODING_GUIDE.md) — 项目规范与开发约定
+- [ROADMAP.md](ROADMAP.md) — 前端优化目标与 1.0 发布门槛（含实测基线与验证命令）
 - [SECURITY_AUDIT.md](SECURITY_AUDIT.md) — 安全审计
