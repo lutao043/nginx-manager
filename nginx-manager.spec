@@ -28,7 +28,11 @@ a = Analysis(
     [os.path.join(ROOT, "backend", "server.py")],
     pathex=[os.path.join(ROOT, "backend")],
     binaries=[],
-    datas=[(os.path.join(ROOT, "frontend"), "frontend")],
+    datas=[
+        (os.path.join(ROOT, "frontend"), "frontend"),
+        # 发布说明随资源一同打包：/api/changelog（界面「更新历史」）的数据源
+        (os.path.join(ROOT, "release-notes"), "release-notes"),
+    ],
     # tkinter 是标准库，PyInstaller 静态分析可识别函数内的 import tkinter 并自动
     # 收齐 _tkinter.pyd 与 tcl/tk DLL（启动选择框与「浏览」按钮依赖它，勿加入 excludes）
     hiddenimports=[],
