@@ -19,7 +19,7 @@
 | 维度 | v0.7.0 基线实测值 | G1–G6 落地后复测（2026-09-21） | 状态 |
 |---|---|---|---|
 | 视觉层级 / 主题 | 边框界定层级；8 主题（4 配色 × 日夜）；零外部请求 | 未改动 | ✅ 达标 |
-| 对比度 | 暗色最浅灰字 4.5:1（重构前 2.9:1）；emerald-light 主色白字 5.0:1（原 4.1:1） | **已全量达标 WCAG AA（2026-09-22）**：`scripts/contrast_audit.py` 覆盖 24 对 × 8 主题 = **192 项全过**（可读文本 ≥4.5、非文本控件边界 ≥3.0），脚本解析值与真实浏览器 `getComputedStyle` 逐项一致（192/192），并已接进双入口测试与 CI。本次修掉原 21 项严格档差距（亮色 `--text-3/--text-4`、亮色四个语义色、emerald-dark `--text-4`、全部主题的 `--border-strong`）；取色按「护眼」原则——只压/提到刚过线的第一档、保留各主题色相、不追求更高对比，且只让**控件轮廓**变强，`--border` 分隔线保持轻。语义色的正文主要落在自己的 `-soft` 芯片上（`.badge-running` / `.test-result` / `.callout-*` / `.diff-view` 的 `dl-add`、`dl-hunk`），芯片比纯白面板更严，已一并核对两种底座 | ✅ 全面达标（AA，含严格项） |
+| 对比度 | 暗色最浅灰字 4.5:1（重构前 2.9:1）；emerald-light 主色白字 5.0:1（原 4.1:1） | **已全量达标 WCAG AA（2026-09-22）**：`scripts/contrast_audit.py` 覆盖 24 对 × 8 主题 = **192 项全过**（可读文本 ≥4.5、非文本控件边界 ≥3.0），脚本解析值与真实浏览器 `getComputedStyle` 逐项一致（192/192），并已接进双入口测试与 CI。本次修掉原 21 项严格档差距（亮色 `--text-3/--text-4`、亮色四个语义色、emerald-dark `--text-4`、全部主题的 `--border-strong`）；取色按「护眼」原则——只压/提到刚过线的第一档、保留各主题色相、不追求更高对比，且只让**控件轮廓**变强，`--border` 分隔线保持轻。语义色的正文主要落在自己的 `-soft` 芯片上（`.badge-running` / `.test-result` / `.callout-*` / `.diff-view` 的 `dl-add`、`dl-hunk`），芯片比纯白面板更严，已一并核对两种底座。**上界收紧（2026-09-22）**：「全过 AA」只保证了看得清，深色主题的正文主色却仍是 16.6:1、语义色 9.3:1、主按钮填色 10.7:1，满屏刺眼（用户反馈）。故给上界也定线：深色正文主色 ≤ 约 12:1（16.63→12.07）、次级正文 ≈ 6.8:1（8.21→6.82）、语义色 ≈ 7:1（ok 9.30→7.04 / warn 9.23→7.02 / danger 6.37→5.61 / info 7.28→6.21），四个深色强调色降饱和约 8–10%（翡翠 `#3ddc97`→`#2bc280`、海洋 `#4d9ef5`→`#4597ef`、琥珀 `#f0a53c`→`#e59320`、玫瑰 `#f4728c`→`#ec6983`）并把主按钮填色档 10.70→8.22；浅色只把正文主色 16.51→14.11 与次级正文 7.21→6.88。**不动**的部分同样是有依据的：灰字三/四档与全部 `--border-strong` 本就贴 AA 下限（深色 `border-strong/bg-raised` 3.16–3.18），浅色语义色被自身 `-soft` 芯片压到 4.65，都没有下压空间。改后 192 项仍全过（退出码 0），`ui.js` 色板色块同步为新的强调色，双入口测试 118 例全绿 | ✅ 全面达标（AA，含严格项） |
 | 危险操作防护 | 保存前自动备份 + `nginx -t` + `409 saved:true` 警告条 + 一键回滚；路径穿越校验 9 处；全仓 `shell=` 命中 0（无 shell=True）；写接口强制 `X-Requested-With` | 同上；另加 `--port` 入口范围校验（越界或非整数以退出码 2 拒绝，不在 bind 阶段才抛错）、单行 `location` 拒改写、未建模配置拒改写；备份改为**用户显式选择**（保存并备份 / 仅保存），未启用备份时「回滚」入口自动退化为回滚到最新备份（不留死按钮）；**日志读取路径校验放宽到配置声明的候选**（2026-09-22：`/api/logs/access` 的 `path` 原先只认 prefix/confDir 之内，导致「下拉里选中刚刚展示的同一个文件」被判 403——发行版把日志写到 `/var/log/nginx` 时必现；现允许用户自己 nginx.conf 声明的候选路径，其余任意路径仍 403，e2e 与单测都锁住这条边界） | ✅ 达标 |
 | 阻塞式原生弹窗 | `alert(` / `confirm(` / `prompt(` 命中 0（全部为自绘弹窗） | 复测仍为 0 | ✅ 达标 |
 | 减少动效 | `prefers-reduced-motion` 已有处理 | 未改动 | ✅ 达标 |
@@ -67,6 +67,7 @@
 | 登录鉴权 / 多用户 / RBAC | 用户已决策：仅绑 `127.0.0.1`，无鉴权 |
 | 打印样式 | 无使用场景 |
 | i18n / 多语言界面 | 单用户中文场景 |
+| 自动更新 / 联网检查新版本 | 用户已决策「不搞自动更新」：升级 = 用新版 exe 替换旧 exe（配置与备份在数据目录里不受影响）。本产品不做联网检查、下载或静默升级 |
 | 前端引入 CDN / 构建工具 / 框架 | 离线可用与可移植是硬约束（见附录） |
 
 ## 五、路线与阶段目标
@@ -77,11 +78,14 @@
 | `0.8.0` | 测试基建：G1 + G2 落地并接入 CI | **功能冻结版**：本阶段不新增任何功能 | ✅ G1/G2 已落地并接入 CI；冻结期现已结束（见下） |
 | `0.9.x` | 冻结候选：G5 + G3 全键盘走查 + G6 | 只修 bug，不加功能 | ✅ G5/G6 已落地、G3 全键盘走查通过 |
 | `1.0.0-rc.1` | 发布候选版：把门禁全绿的源码交到真实环境验收 | 只做发布动作，不夹带新功能 | ✅ **已发布（2026-09-22）**：`server_version` 提为 `1.0.0-rc.1`、`release-notes/v1.0.0-rc.1.md` 已写；tag `v1.0.0-rc.1` 推 GitHub 与 Gitea；GitHub 流水线 `Build & Release` **成功**（run 35683165934），Release 资产 `nginx-manager-v1.0.0-rc.1.exe`（12,324,307 字节，HTTP 200 可下载）；main 上的 `Tests` 门禁同时**成功**（38 个提交首次过 CI） |
-| `1.0.0` | 正式版：三层目标全部达标 + rc 验收通过 | 验收通过后转正 | ⏳ 门槛已全部转绿（见第三节）；等 rc.1 的真实环境验收结果——通过后**只提升 `server_version` 并打同名 tag，代码不动** |
+| `1.0.0-rc.2` | 第二个候选版：把 rc.1 之后的改动（页面版本号 + 更新历史、暗夜对比度上界收紧）交真实环境验收 | 只做发布动作，不夹带新功能 | ✅ **已发布（2026-09-22）**：`server_version` 提为 `1.0.0-rc.2`、`release-notes/v1.0.0-rc.2.md` 已写；tag `v1.0.0-rc.2` 推 GitHub 与 Gitea；CI 与 Release 资产的实测回写见下方（同日补记） |
+| `1.0.0` | 正式版：三层目标全部达标 + rc 验收通过 | 验收通过后转正 | ⏳ 门槛已全部转绿（见第三节）；**验收载体已由 rc.1 换成 rc.2**（rc.1 说明里那句「只提升版本号、代码不动」作废，rc.1 之后的改动都并入 rc.2），转正动作见下方记录 |
 
 **关键约束：先把保障建起来，再谈正式版。** 0.8.0 必须是功能冻结版。
 
 **功能冻结已于 2026-09-22 由用户指令解除一次（有边界）**：用户要求「日志做成实时滚动 + 可暂停，加完这个功能再谈发布」。因此本轮**在冻结期外**新增了一项功能（日志实时跟随 + 暂停），并同步补齐契约、双入口测试、真实 nginx e2e 用例与真实浏览器走查。**只此一项**：其余改动仍按「只修缺陷」处理（本轮顺带修掉一个真实缺陷：`/api/logs/access` 显式传回配置声明的日志路径被判 403）。冻结恢复后如需再增功能，仍须先取得用户明确指令并在此处登记。
+
+**功能冻结第二次解除（2026-09-22，用户指令「页面添加版本号显示，和更新历史。不搞自动更新」）**：rc.1 已发布、正等真实环境验收，本轮又**在冻结期外**新增一项功能——顶栏常显 manager 自身版本号 + 「更新历史」弹窗（数据源就是仓库 `release-notes/*.md`），并明确**不做自动更新**（无联网检查、无下载、无静默升级）。该功能落在 rc.1 之后，故正式版 `v1.0.0` 会**包含**它。
 
 **发布记录（2026-09-22，用户指令「发布一个版本 我要到真实环境测试」）**：以 **`v1.0.0-rc.1`** 作为发布候选版交到真实环境验收；正式版 `v1.0.0` 待验收通过后只改版本号转正。本次发布的动作与产物：
 
@@ -91,7 +95,23 @@
 4. **本批次的代码改动**：日志实时跟随 + 可暂停（契约 `since/offset/reset/hasMore` → 后端只在完整行边界推进的增量读取 → 前端跟随/暂停/未读计数），并顺带修掉 `/api/logs/access` 把配置声明的日志路径显式传回却被判 403 的缺陷。
 5. **通道与执行体限制（环境事实，非代码问题）**：GitHub 的 22 端口被透明代理劫持（解析到 `198.18.0.55`，SSH banner 超时），HTTPS 又无凭据，故推送改用 **`ssh.github.com:443`** 备用通道；Gitea（`origin`，`http://192.168.5.10:3020`）推送正常，但**该实例未配置 Actions runner（2026-09-22 用户确认）**——`.gitea/workflows/` 下的 build 与 tests 两条流水线都不会执行，CI 门禁与发布产物**只来自 GitHub Actions**，Gitea 仅作代码与 tag 镜像；两条 `.gitea` 工作流文件已加注说明，配置保持与 `.github` 镜像一致，将来配上 runner 即可生效。日后本机再发版，先确认这两条通道与执行体是否仍可用。
 
-**验收通过后的转正动作**（保持代码不动）：`server_version` 由 `1.0.0-rc.1` 改为 `1.0.0` → 写 `release-notes/v1.0.0.md` → `release: v1.0.0` 提交 → 打 tag `v1.0.0` 推两个远端。
+**发布记录（2026-09-22，版本号显示 + 更新历史）**：用户点名「页面添加版本号显示，和更新历史。不搞自动更新」。落地点：
+
+1. **契约先行**：`API.md` 给 `GET /api/status` 增加 `managerVersion`（与 nginx 自己的 `version` 是两个字段，界面顶栏显示的是前者），新增 `GET /api/changelog` → `{version, releases[], notesAvailable}`，并在「前端行为约定」写明版本号入口与「无自动更新」。
+2. **数据源就是发布说明**：`/api/changelog` 直接解析仓库 `release-notes/*.md`（版本号取文件名；`## ` 标题去掉开头的版本号前缀；`### ` 小节收 `-` 列表项与散文段落，围栏代码块/引用/表格/分隔线不进历史；文末 `Full Changelog` 链接），按版本号倒序（同号下正式版排在预发布版之前）。**不新增第二份「更新日志」文件**——两处维护必然漂移。
+3. **打包与持久化**：`nginx-manager.spec` 把 `release-notes/` 一并打入 exe；`stage_frontend` 的复制/清理逻辑抽成 `_stage_versioned`，新增 `stage_release_notes` 把发布说明持久化到数据目录 `release-notes/v{版本}/`（与前端同一套规则）——临时解压目录被系统清理时，更新历史不会变空。
+4. **界面**：顶栏版本号 chip（点击打开弹窗）+ 更新历史弹窗（`details/summary` 折叠、键盘可用；当前版本带「当前版本」徽章且默认展开；要点文本先转义再套白名单行内标记 `**粗体**` / `` `代码` ``，对比链接只作纯文本展示）。所有新元素只复用已审计的配色对。
+5. **门禁**：`tests/test_changelog.py` 新增 21 例（解析规则、排序与「独立实现」比对、打包与持久化目录、界面入口与「前端零外部请求」）；双入口 **139 例全绿**（原 118 例）、`contrast_audit` 192/192、`dom_contract` 通过；真实浏览器对 8 套主题实测新元素最低对比度 **5.09:1**（版本 chip 的 text-3 / bg-raised；AA 下限 4.5），弹窗内文本 6.82–7.03、版本徽章 5.44–6.21。
+6. **「不搞自动更新」的可验证边界**：没有 `/api/update` 之类端点、前端脚本零外部请求（均有测试断言），弹窗只说明「升级 = 用新版 exe 替换旧 exe，配置与备份在数据目录里，替换后继续可用」。
+
+**发布记录（2026-09-22，用户指令「完善一下 aoci资产 然后打个tag 发布一版」）**：以 **`v1.0.0-rc.2`** 作为第二个候选版交真实环境验收（rc.1 的验收载体作废，验收项并入本版）。本次动作与产物：
+
+1. **版本与说明**：`server_version` 由 `1.0.0-rc.1` 提为 `1.0.0-rc.2`；`release-notes/v1.0.0-rc.2.md` 覆盖 rc.1 之后的两批改动（页面版本号 + 更新历史、暗夜对比度上界收紧）并列出验收重点；README 中英功能列表同步「页面版本号 + 更新历史」。
+2. **发布通道**：GitHub 的 22 端口仍被透明代理劫持（SSH 不可用），本次**改用 HTTPS 推送**（`https://github.com/lutao043/nginx-manager.git`，凭据走 macOS 钥匙串）；tag `v1.0.0-rc.2` 与 main 推两个远端。Gitea 该实例仍未配 runner，CI 门禁与 exe 产物只来自 GitHub Actions。
+3. **AOCI 收尾**：本批次的受管对象（`backend/server.py`、`README.md`、`README.en.md`、`API.md`、`ROADMAP.md`，以及新增的 `release-notes/v1.0.0-rc.2.md`）在提交前完成认知维护，`aoci check` 返回「✓ 可提交（Entries漂移/待策展/字典/格式/草稿五净）」、`aoci_maintain` 返回 `aligned`（`code_drift` 全空），索引条目由 50 增至 51（新增 rc.2 说明条目）。
+4. **门禁**：双入口 139 例、`contrast_audit` 192/192、`dom_contract`、`node --check` 与「版本号不落后于最新 tag」全部通过（复现命令见第六节）。
+
+**验收通过后的转正动作**：`server_version` 由 `1.0.0-rc.2` 改为 `1.0.0` → 写 `release-notes/v1.0.0.md`（须覆盖 rc.1 之后的两批改动：页面版本号 + 更新历史、暗夜对比度上界收紧）→ 同步 README 中英功能列表 → `release: v1.0.0` 提交 → 打 tag `v1.0.0` 推两个远端。**验收范围** = rc.1 的全部项目 + rc.2 的新增项。
 
 
 ## 六、怎样验证进度（可复现命令）
@@ -132,6 +152,11 @@ curl -s "http://127.0.0.1:8310/api/logs/error?since=<offset>"  # 增量：reset=
 #   需人工走查：切到日志页签 → 往日志文件追加内容 → 暂停 → 再追加（位置应不动、提示计数）
 #   → 点继续（跳回最新）→ 往上滚（应自动暂停）
 
+# 更新历史：版本号 + 逐版发布说明（curl 可复现；纯本地解析 release-notes/*.md，无联网检查）
+curl -s http://127.0.0.1:8310/api/changelog | python3 -m json.tool
+curl -s http://127.0.0.1:8310/api/status | python3 -c "import json,sys; print(json.load(sys.stdin)['managerVersion'])"
+#   界面：顶栏版本号 chip → 打开「更新历史」弹窗（当前版本默认展开、带「当前版本」徽章）
+
 # 对比度：8 主题 × 24 对 = 192 项，WCAG AA 门禁（退出码即结论；--quiet 只看结论）
 python3 scripts/contrast_audit.py
 #   --strict 是兼容别名（2026-09-22 起与默认档同一标准），配色的邻接与阈值说明见脚本 docstring
@@ -164,7 +189,7 @@ aoci 二进制：`/Users/lutao/.local/bin/aoci`（`aoci version 0.1.0-rc12`，�
 
 ### B2 认知维护状态与提交口径（2026-09-21 已闭环，2026-09-22 复核）
 
-认知维护积压清零：`aoci.code.txt` **49 条 / 源码 49 个**（四批维护：G1/G2 测试与契约基建落地后＝新增 3 条 + 更新 9 条；发布前复查后＝新增 2 条（`LICENSE`、`scripts/e2e_real_nginx.py`）+ 更新 13 条；补版本派生断言后＝更新 `ROADMAP.md` + `tests/test_api_contract.py`；配色修 AA 与对比度门禁后＝更新 `frontend/css/style.css` / `scripts/contrast_audit.py` / `ROADMAP.md`，`tests/test_contrast.py` 落在观察集），`aoci check` 返回「✓ 可提交（Entries漂移/待策展/字典/格式/草稿五净）」，`aoci_maintain` 返回 `aligned`（`governance_aligned: true`、`code_drift` 全空）。测试类文件（`tests/*.py`）落在**观察集**而非索引集——`tests/test_api_contract.py` 的改动只前移基线、不产生新条目；新增受管文件后若要继续维护，先按机器下发的 next_command 跑 `aoci scope acknowledge --repo . --reviewed-by <agent>` 完成作用域复核前移。
+认知维护积压清零：`aoci.code.txt` **51 条 / 源码 51 个**，`aoci check` 返回「✓ 可提交（Entries漂移/待策展/字典/格式/草稿五净）」，`aoci_maintain` 返回 `aligned`（`governance_aligned: true`、`code_drift` 全空）。批次沿革：G1/G2 测试与契约基建（新增 3 + 更新 9）→ 发布前复查（新增 2：`LICENSE`、`scripts/e2e_real_nginx.py`；更新 13）→ 补版本派生断言（更新 `ROADMAP.md`、`tests/test_api_contract.py`）→ 配色修 AA 与对比度门禁（更新 `frontend/css/style.css`、`scripts/contrast_audit.py`、`ROADMAP.md`，`tests/test_contrast.py` 落观察集）→ **rc.1 发布批次**（8 条，含新增 `release-notes/v1.0.0-rc.1.md` 条目，49→50）→ **Gitea 无 runner 批次**（3 条重创作）→ **对比度上界 + 版本号/更新历史批次**（9 条 update：`API.md`、`ROADMAP.md`、`VIBE_CODING_GUIDE.md`、`backend/server.py`、`frontend/css/style.css`、`frontend/index.html`、`frontend/js/api.js`、`frontend/js/app.js`、`nginx-manager.spec`；`frontend/js/ui.js` 的色板调整随该批前移基线）→ **rc.2 发布批次**（更新 `backend/server.py`、`README.md`、`README.en.md`、`API.md`、`ROADMAP.md`，新增 `release-notes/v1.0.0-rc.2.md` 条目，50→51）。测试类文件（`tests/*.py`，含新增的 `tests/test_changelog.py`）落在**观察集**而非索引集——改动只前移基线、不产生新条目；新增受管文件后若要继续维护，先按机器下发的 next_command 跑 `aoci scope acknowledge --repo . --reviewed-by <agent>` 完成作用域复核前移。
 
 **提交口径（rc12 实测）**：MCP 的 `aoci_update_entry` 批量 `entries` 入口在本机被客户端 Schema 校验拦下（该字段发布的 `oneOf` 分支互斥为空，任何对象都判 `not valid under any of the given schemas`），正式写入零发生。可用传输是同一管线的 CLI：
 
@@ -181,7 +206,7 @@ aoci update-entry --repo . --json --path <仓库相对路径> \
 
 **重要**：Hermes 的 MCP 工具在会话启动时加载，接入后必须**开新会话**才会出现 `aoci_*` 工具；当前会话内无法直接调用。
 
-### B3 上下文压缩后的重载与六个实测坑（2026-09-21 起记录）
+### B3 上下文压缩后的重载与八个实测坑（2026-09-21 起记录）
 
 - **压缩后必须重载认知**：宿主注入压缩摘要后，此前模型认知一律不作数。用 `aoci_overview` 携带 `refresh_reasons=["context_compaction"]` 与**新的** `refresh_event_id` 请求完整 Whole-Index（不要设 `check_only`），原样跟随 `next_cursor` 到 `completed=true`，再提交交付确认与 Attestation（本次 43/43 条、Challenge 10/10 通过后 `cognition_verified`）。摘要里不得携带正式 Header / Entry / Challenge 正文。
 - **坑 1（会丢正文，本会话实际踩到）**：**不要**在跟随 `next_cursor` 的那次调用里附带 `host_delivery_confirmation`。服务端会据此认定「完整正文已交付」而直接进入 attestation 模式，**剩余分块正文不再下发**（表现为只返回元数据 + Challenge、`delivery_integrity: incomplete`）。正确顺序：先取完所有分块（最后一块含 `<<<AOCI_OVERVIEW_BODY_END/v1>>>` 结束标记），再单独一次调用同时提交 `host_delivery_confirmation`（`version: overview-delivery-receipt/v1`、`body_sha256`/`body_bytes` 取自分块回执、`end_marker_observed: true`）与 `model_cognition_attestation`。已误传时：用新的 `refresh_event_id` 重开一次整链（正文重发，不猜写、不用 `aoci_get_entries` 补缺块）。
@@ -190,3 +215,5 @@ aoci update-entry --repo . --json --path <仓库相对路径> \
 - **坑 4（离线复算颜色会算错）**：`frontend/css/style.css` 里兜底 `:root` 块写在「日」色阶块**之后**，若按文件顺序把同选择器声明逐个叠加，亮色主题会被暗色值覆盖（本次写 `scripts/contrast_audit.py` 时实际踩到，第一版把亮色 text-1 算成 1.10:1）。真实成因是层级而非顺序：`:root` 落在 `<html>`，对 `<body>` 只能是继承值，而 `[data-theme…]` 落在 `<body>`，自身声明恒胜。改为「两趟解析」后与真实浏览器 `getComputedStyle` 取色逐项核对一致（88 项全对齐）。
 - **坑 5（对比度的「配对」不能想当然，两层都要按真实邻接取）**：判断某色是否达标，必须先确认它实际落在哪个表面上，而不是挑一个看起来合理的表面。本次修 AA 时两处都靠 `grep` 证据纠正：① 灰字四档与语义色正文的真实底座是**面板/画布**，但语义色正文主要落在自己的 `-soft` **芯片**上（`.badge-running` / `.test-result` / `.callout-*` / `.diff-view` 的 `dl-add`、`dl-hunk`），芯片比纯白面板更严（旧值 3.63–4.39 vs 面板 4.10）；② `--border-strong` 在页面上从不落在 `--bg-hover` 上，而是 `--bg-raised`（输入框/按钮/徽章）+ `--bg-sunken`（编辑器/日志/diff）+ `--bg-panel` + 画布四者，最严的一档是「浅色 `--bg-sunken` / 深色 `--bg-raised`」——只核对画布会漏判。**结论：新配色对进脚本前，先用 `grep -n` 把该 token 与背景 token 同现的规则列出来当证据。**
 - **坑 6（变异测试别在工作区改文件再用 `git checkout` 还原）**：为验证新门禁真的会红，本次先把 `style.css` 的色值改回旧值跑测试（确实 2 处失败），随后用 `git checkout -- frontend/css/style.css` 复原——**连同尚未提交的配色改动一起被抹掉**（只保住了报告里的结论，色值靠记忆重打一遍）。稳妥做法有两种：把待测文件先 commit 再变异；或**在 `scratch/` 里复制一份改坏的文件**、用 `--css` 参数/替换模块常量跑审计（本次补做后采用后者）。
+- **坑 7（A 的 400 rune 是硬计数，超了只准压 A）**：Entry 的 A 字段上限 400 个 Unicode 字符，超限报 `fras_a_too_long`（`expected: max_runes=400`、`formal_writes_started=false`，零写入可安全重提）。本次给 6 个受管文件补新语义时，A 由 383–400 涨到 430–513 被拒；机器的 `safe_repair_action` 明确：**只压缩 A，F/R/S 逐字节不变**。同时 S 还受 token 档位约束（≈UTF-8 字节/3；C9 ≤200、C8 ≤140、C7-4 ≤80/40 token），C7 档的 `ROADMAP.md` S 已顶到 80 token——新事实只能进 A。写作时先把 A 的 `len()` 打印出来核对（≤400）再提交，比「先提交再被拒」省一整轮。
+- **坑 8（E 规模档位要随文件生长更新，校验器提醒不是拒绝）**：`ROADMAP.md` 长到 209 行后，`--preview` 带回「E规模档位错配：文件209行按字典应为M，条目标注S；文件生长跨档属正常，请顺手更新E位」。这类提醒不影响写入，但标签会长期失真，改 tag 的 E 位（`SQ7S` → `SQ7M`）即消除。同理，`--preview` 全程零写入，先逐候选 preview 再 apply，能把全部 finding 提前看完。
