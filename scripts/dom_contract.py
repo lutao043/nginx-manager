@@ -9,9 +9,12 @@
   2. JS / HTML 使用的 class 未在 style.css 定义（含 .a → .b 组合选择器的每一段）
   3. style.css 用了未定义的 var(--x)（静默失效的声明）
   4. 某个 [data-*] 主题块未覆盖兄弟主题定义的全部 token（主题间漏色）
+  5. 布局契约（LAYOUT_INVARIANTS）：卡片裁切 / 可滚动区可收缩 / 停靠区让位下限 /
+     409 提示条完整可见——这些声明被删会在窗口变矮时让内容顶出卡片压住兄弟卡片
 
 仅提示不改退出码：
   - style.css 定义但从未被引用的 class / 变量（重构残留，可能是运行时拼接的名字）
+  - 同一规则内重复声明同一属性（后者静默生效；合法用法是 height:100vh;height:100dvh 这类渐进增强）
 
 用法（仓库根执行）：
     python3 scripts/dom_contract.py
@@ -67,6 +70,69 @@ def strip_css(text):
     return re.sub(r'@(?:media|supports|keyframes|font-face)[^{]*\{', '{', t)
 
 
+def css_rules(text):
+    """把样式表解析成 {选择器: {属性: 值}}（值取该属性在规则内最后一次声明）。
+
+    只用于布局契约：同规则内重复声明同一属性时，后一条静默生效（本仓曾因此把
+    .dock-panel 的 min-height:150px 下限覆盖成 0，停靠区在窗口变矮时塌陷）。
+    故这里同时返回每条规则的重复声明清单，交给调用方提示。
+    """
+    rules, dupes = {}, []
+    for sel, body in re.findall(r'([^{}]+)\{([^{}]*)\}', text):
+        sel = " ".join(sel.split())
+        if not sel or sel in ("{",):
+            continue
+        decl = {}
+        for item in body.split(";"):
+            if ":" not in item:
+                continue
+            prop, _, value = item.partition(":")
+            prop, value = prop.strip(), value.strip()
+            if prop.startswith("--") or not prop:
+                continue
+            if prop in decl and decl[prop] != value:
+                dupes.append("%s{ %s: %s 覆盖 %s }" % (sel, prop, value, decl[prop]))
+            decl[prop] = value
+        if sel in rules:
+            rules[sel].update(decl)
+        else:
+            rules[sel] = decl
+    return rules, dupes
+
+
+# 布局契约：这些声明是「内容不许跑到卡片外面」的保证，删掉会在窗口变矮时复现
+# 「编辑器卡片里的 409 提示条压住下方停靠区」（实测溢出 231px）这一类问题。
+# 每项 = (选择器, 属性, 期望值或 None 表示只要求非 0, 说明)
+LAYOUT_INVARIANTS = (
+    (".editor-panel", "overflow", "hidden",
+     "编辑器卡片必须自己裁切，否则子元素会顶出卡片盖住停靠区"),
+    (".editor-wrap", "min-height", "0",
+     "编辑器区必须可收缩让位给 409 提示条，给死 min-height 会把卡片顶开"),
+    (".dock-panel", "min-height", None,
+     "停靠区必须保留让位下限，否则窗口变矮时会被压到几乎不可见"),
+    ("#viewConfig .editor-panel > .callout", "flex", "none",
+     "409「已保存但校验失败」提示条必须完整可见，不能被压缩或裁掉"),
+)
+
+
+def check_layout(css):
+    rules, dupes = css_rules(css)
+    problems = []
+    for sel, prop, expect, why in LAYOUT_INVARIANTS:
+        decl = rules.get(sel)
+        if decl is None:
+            problems.append("  缺少规则 %s（%s）" % (sel, why))
+            continue
+        actual = decl.get(prop)
+        if actual is None:
+            problems.append("  %s 未声明 %s（%s）" % (sel, prop, why))
+        elif expect is None and actual.strip() in ("0", "0px"):
+            problems.append("  %s 的 %s 为 0（%s）" % (sel, prop, why))
+        elif expect is not None and actual.strip() != expect:
+            problems.append("  %s 的 %s=%s，应为 %s（%s）" % (sel, prop, actual, expect, why))
+    return problems, dupes
+
+
 def check(html_path, css_path, js_patterns, ignore_classes, ignore_ids):
     html = Path(html_path).read_text(encoding="utf-8")
     css_raw = Path(css_path).read_text(encoding="utf-8")
@@ -99,6 +165,15 @@ def check(html_path, css_path, js_patterns, ignore_classes, ignore_ids):
     used_vars = set(VAR_USE.findall(css_raw))
 
     problems = []
+
+    layout_problems, layout_dupes = check_layout(css)
+    if layout_problems:
+        problems.append("布局契约被破坏（内容会跑到卡片外面，压住兄弟卡片）：")
+        problems += layout_problems
+    if layout_dupes:
+        print("[info] 同一规则内重复声明（后者静默生效，确认是有意的渐进增强）：")
+        for d in layout_dupes:
+            print("  " + d)
 
     missing_ids = sorted(js_ids - html_ids - js_created_ids - ignore_ids)
     if missing_ids:

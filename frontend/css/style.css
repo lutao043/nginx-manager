@@ -364,6 +364,8 @@ select:focus{border-color:var(--accent);box-shadow:var(--ring)}
   color:var(--text-2);background:var(--bg-panel);
   border-bottom:1px solid var(--border);
   white-space:pre-wrap;word-break:break-word;
+  /* 多行 nginx -t 报错不许无限吃掉下方编辑器的高度：超出部分在条内滚动 */
+  max-height:min(30vh,220px);overflow:auto;
   animation:fadeIn var(--t) var(--ease) both;
 }
 .test-result.ok{color:var(--ok);background:var(--ok-soft);border-color:var(--ok-line)}
@@ -430,10 +432,15 @@ select:focus{border-color:var(--accent);box-shadow:var(--ring)}
 .tree-item.active .icon{color:var(--accent)}
 .tree-item .name{overflow:hidden;text-overflow:ellipsis}
 
-/* 编辑器：行号栏与文本区共用一层边框（焦点环落在 .editor-wrap 上） */
-.editor-panel{flex:1 1 auto;display:flex;flex-direction:column;min-height:0}
+/* 编辑器：行号栏与文本区共用一层边框（焦点环落在 .editor-wrap 上）
+   min-height + overflow:hidden 是必需的，不是审美选择：卡片内是纵向 flex 流，子元素
+   （编辑器区 min-height、底部按钮行、409 提示条）各有最小高度；窗口不高、且 nginx -t
+   结果条与「已保存但校验失败」提示条同时出现时，卡片被挤到 100px 而子元素仍按最小高度
+   排下去，就顶出卡片、盖住下方停靠区（实测提示条溢出卡片 231px，正好压在「配置备份」上）。
+   卡片自己裁切，编辑器区让位给提示条，才保证「任何东西都不会跑到卡片外面」。 */
+.editor-panel{flex:1 1 auto;display:flex;flex-direction:column;min-height:260px;overflow:hidden}
 .editor-wrap{
-  position:relative;flex:1 1 auto;display:flex;min-height:150px;min-width:0;
+  position:relative;flex:1 1 auto;display:flex;min-height:0;min-width:0;
   background:var(--bg-sunken);border:1px solid var(--border-strong);border-radius:var(--r-md);
   overflow:hidden;
   transition:border-color var(--t) var(--ease),box-shadow var(--t) var(--ease);
@@ -469,10 +476,12 @@ select:focus{border-color:var(--accent);box-shadow:var(--ring)}
 .empty-icon{width:22px;height:22px;color:var(--text-4)}
 .empty-title{font-size:var(--fs-md);color:var(--text-2)}
 
-/* 底部停靠区：备份 / 错误日志 / 访问日志 */
+/* 底部停靠区：备份 / 错误日志 / 访问日志
+   flex-shrink:1：窗口不高时先让停靠区让位（它自身可滚动），
+   否则被压扁的会是编辑器卡片。min-height 是让位的下限。 */
 .dock-panel{
-  flex:0 0 auto;height:clamp(220px,34%,380px);
-  display:flex;flex-direction:column;min-height:0;padding:10px 14px 12px;
+  flex:0 1 auto;height:clamp(220px,34%,380px);
+  display:flex;flex-direction:column;min-height:150px;padding:10px 14px 12px;
 }
 .dock-head{flex:none;margin-bottom:8px;border-bottom:1px solid var(--border)}
 .dock-tabs{display:flex;gap:14px}
@@ -693,6 +702,8 @@ body.first-load .pool-item{animation:fadeUp var(--t-slow) var(--ease) both}
 #viewConfig .editor-panel .panel-head{flex:none}
 #viewConfig .panel-foot{flex:none}
 #viewConfig .callout{margin-top:10px}
+/* 409「已保存但校验失败」提示条必须在卡片里完整可见：既不让它被压扁，也不让它外溢 */
+#viewConfig .editor-panel > .callout{flex:none}
 
 @media (max-width:900px){
   .sidebar{width:190px}
