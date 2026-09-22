@@ -87,6 +87,42 @@ class DomContractTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertNotIn("#btnJumpErr", out)
 
+    def test_removed_card_clip_fails(self):
+        """布局契约：拿掉编辑器卡片的 overflow:hidden 必须失败。
+
+        这条声明是「409 提示条顶出卡片压住停靠区」那个 bug 的修复要点之一，
+        删掉它就会复现，所以它是门禁而不是风格偏好。
+        """
+        self._edit("css/style.css",
+                   ".editor-panel{flex:1 1 auto;display:flex;flex-direction:column;min-height:260px;overflow:hidden}",
+                   ".editor-panel{flex:1 1 auto;display:flex;flex-direction:column;min-height:260px}")
+        code, out = run_check(self.tmp)
+        self.assertEqual(code, 1, "卡片失去裁切后应报错：\n" + out)
+        self.assertIn("布局契约被破坏", out)
+        self.assertIn("overflow", out)
+
+    def test_removed_editor_shrink_fails(self):
+        """布局契约：编辑器区给死 min-height（不可收缩）必须失败。"""
+        self._edit("css/style.css", "flex:1 1 auto;display:flex;min-height:0;min-width:0;",
+                   "flex:1 1 auto;display:flex;min-height:150px;min-width:0;")
+        code, out = run_check(self.tmp)
+        self.assertEqual(code, 1, "编辑器区不可收缩后应报错：\n" + out)
+        self.assertIn(".editor-wrap", out)
+
+    def test_duplicate_property_in_rule_is_reported(self):
+        """同一规则内重复声明同一属性只提示不失败。
+
+        静默覆盖正是踩过的坑（.dock-panel 的 min-height:150px 被同规则后面的
+        min-height:0 覆盖，停靠区在窗口变矮时塌陷），但要容忍 height:100vh;height:100dvh
+        这类渐进增强写法，故降为提示。
+        """
+        self._edit("css/style.css", ".dock-panel{\n  flex:0 1 auto;height:clamp(220px,34%,380px);",
+                   ".dock-panel{\n  min-height:300px;flex:0 1 auto;height:clamp(220px,34%,380px);")
+        code, out = run_check(self.tmp)
+        self.assertEqual(code, 0, "重复声明不应导致失败：\n" + out)
+        self.assertIn("重复声明", out)
+        self.assertIn("min-height", out)
+
 
 if __name__ == "__main__":
     unittest.main()
