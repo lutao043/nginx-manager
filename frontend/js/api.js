@@ -52,6 +52,7 @@ const api = {
 
   // ---- 业务方法 ----
   status() { return this.get("/api/status"); },
+  changelog() { return this.get("/api/changelog"); },   // 版本号 + 更新历史（纯本地读取，无联网检查）
   configTree() { return this.get("/api/config"); },
   readFile(path) { return this.get("/api/config/file?path=" + encodeURIComponent(path)); },
   saveFile(path, content, runTest, doBackup) { return this.put("/api/config/file", { path, content, runTest, doBackup }); },
