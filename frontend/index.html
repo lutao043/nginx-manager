@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>nginx manager · 配置管理端</title>
 <!-- 内联 SVG 图标（data URI，零外部请求，同时消除 favicon 404） -->
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%233ddc97'/%3E%3Cg stroke='%2304140d' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M5 8h14M5 12h14M5 16h9'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%232bc280'/%3E%3Cg stroke='%2304140d' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M5 8h14M5 12h14M5 16h9'/%3E%3C/g%3E%3C/svg%3E">
 <!-- 离线环境运行：不引用任何外部资源，字体走系统回退栈（见 style.css --font* 变量） -->
 <link rel="stylesheet" href="css/style.css">
 </head>
@@ -65,6 +65,9 @@
       <span id="statusBadge" class="badge badge-unknown">检测中…</span>
     </div>
     <div class="topbar-actions">
+      <!-- 版本号：常显 manager 自身版本，点击打开更新历史（本产品无自动更新） -->
+      <button id="btnVersion" class="btn btn-mini version-chip" type="button" aria-haspopup="dialog"
+              title="查看更新历史（升级 = 用新版 exe 替换旧 exe，本版不含自动更新）">v—</button>
       <div class="theme-picker">
         <button id="btnTheme" class="btn btn-icon" type="button" aria-haspopup="true" aria-expanded="false"
                 title="切换主题（4 配色 × 日夜）" aria-label="切换主题">
@@ -551,6 +554,24 @@
       <div class="modal-foot">
         <button class="btn" id="btnConfirmNo" type="button">取消</button>
         <button class="btn btn-primary" id="btnConfirmYes" type="button">确认</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 更新历史弹窗：数据来自 GET /api/changelog（release-notes/*.md），不含任何联网更新检查 -->
+  <div class="modal-mask" id="changelogModal" hidden>
+    <div class="modal modal-lg" role="dialog" aria-modal="true" aria-labelledby="changelogTitle">
+      <div class="modal-head">
+        <span class="panel-title" id="changelogTitle">更新历史</span>
+        <button class="modal-close" id="btnCloseChangelog" type="button" aria-label="关闭" data-close><svg class="i"><use href="#i-close"/></svg></button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-note">当前版本 <span class="mono" id="changelogCurrent">—</span>。本产品<strong>不做自动更新</strong>：没有联网检查、没有后台下载；
+          升级方式是用新版 exe 替换旧 exe，配置与备份都在 manager 数据目录里，替换后继续可用。</p>
+        <div id="changelogList" class="changelog-list"><p class="muted">加载中…</p></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" id="btnChangelogOk" type="button" data-close>关闭</button>
       </div>
     </div>
   </div>
