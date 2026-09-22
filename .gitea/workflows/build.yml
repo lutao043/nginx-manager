@@ -1,6 +1,11 @@
 # Gitea Actions — 自动构建多平台 Release
 # 触发：push tag（格式 v*.*.*）
 # 平台：macOS (arm64) + Windows (amd64)
+#
+# ⚠ 本仓库所在的自建 Gitea 实例未配置 Actions runner（2026-09-22 由用户确认），
+#   因此本工作流不会实际执行，不会产出 Release。发布产物实际由 GitHub Actions
+#   构建（.github/workflows/build.yml → GitHub Release）。保留本文件是为了两处
+#   配置镜像一致，将来该实例配上 runner 即可直接生效。
 
 name: Build & Release
 

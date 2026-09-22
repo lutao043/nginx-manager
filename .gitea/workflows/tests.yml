@@ -1,6 +1,11 @@
 # Gitea Actions — 测试门禁
 # 触发：任意分支推送与 PR（tag 推送交给 build.yml 发布，不在这里重复跑）
 # 与 .github/workflows/tests.yml 保持一致
+#
+# ⚠ 本仓库所在的自建 Gitea 实例未配置 Actions runner（2026-09-22 由用户确认），
+#   因此本工作流不会实际执行，不构成门禁。实际执行的测试门禁与发布流水线都在
+#   GitHub Actions（.github/workflows/）。保留本文件是为了两处配置镜像一致，
+#   将来该实例配上 runner 即可直接生效。
 
 name: Tests
 
