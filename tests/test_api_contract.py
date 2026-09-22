@@ -151,6 +151,7 @@ class ApiDocFieldTest(ServerTestCase):
         f.write_conf("nginx.conf", VALID_CONF)
         return {
             ("GET", "/api/status"): lambda: f.get("/api/status"),
+            ("GET", "/api/changelog"): lambda: f.get("/api/changelog"),
             ("GET", "/api/config"): lambda: f.get("/api/config"),
             ("GET", "/api/config/file"): lambda: f.get("/api/config/file?path=nginx.conf"),
             ("GET", "/api/backups"): lambda: f.get("/api/backups"),
