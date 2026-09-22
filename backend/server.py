@@ -22,6 +22,7 @@ import argparse
 import difflib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -44,6 +45,9 @@ BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(BACKEND_DIR)
 # 前端资源目录：开发时读项目根 frontend/；打包后读 sys._MEIPASS/frontend/
 FRONTEND_DIR = os.path.join(getattr(sys, "_MEIPASS", PROJECT_ROOT), "frontend")
+# 发布说明目录（「更新历史」的数据源）：开发时读项目根 release-notes/；打包后读解压目录，
+# 启动时由 stage_release_notes 持久化到数据目录
+NOTES_DIR = os.path.join(getattr(sys, "_MEIPASS", PROJECT_ROOT), "release-notes")
 
 
 # ---------- 用户数据目录 ----------
@@ -134,21 +138,23 @@ def _warn_static_missing(fp: str) -> None:
               "API 不受影响，仅页面 404。重启服务可临时恢复。")
 
 
-def stage_frontend(root: str) -> str:
-    """解析实际使用的前端资源目录。
+def manager_version() -> str:
+    """manager 自身版本号：唯一来源 Handler.server_version（去掉 "nginx-manager/" 前缀）。"""
+    return Handler.server_version.split("/", 1)[-1]
 
-    源码运行：直接用项目根 frontend/。
-    exe 运行：onefile 的解压目录（%TEMP%\\_MEI*）可能在运行期间被磁盘清理/
-    存储感知/管家类软件删除（症状：API 正常但所有页面 404），故启动时把资源
-    复制到数据目录按版本持久保存，此后从副本提供静态文件；复制失败回退解压目录。
+
+def _stage_versioned(src: str, base: str, ready, label: str) -> str:
+    """把打包资源复制到数据目录按版本持久保存，返回实际使用的目录。
+
+    源码运行：直接用项目里的原始目录。
+    exe 运行：onefile 的解压目录（%TEMP%\\_MEI*）可能在运行期间被磁盘清理/存储感知/
+    管家类软件删除（症状：API 正常但页面 404、更新历史为空），故启动时把资源复制到
+    数据目录按版本持久保存；复制失败回退解压目录。ready(dst) 判断副本是否已可用。
     """
-    src = os.path.join(getattr(sys, "_MEIPASS", PROJECT_ROOT), "frontend")
     if not IS_FROZEN:
         return src
-    ver = Handler.server_version.split("/", 1)[-1]  # "nginx-manager/x.y.z" -> "x.y.z"
-    base = os.path.join(root, "frontend")
-    dst = os.path.join(base, f"v{ver}")
-    if os.path.isfile(os.path.join(dst, "index.html")):
+    dst = os.path.join(base, f"v{manager_version()}")
+    if ready(dst):
         return dst
     try:
         tmp = dst + ".tmp"
@@ -165,8 +171,122 @@ def stage_frontend(root: str) -> str:
                 shutil.rmtree(stale, ignore_errors=True)
         return dst
     except OSError as e:
-        print(f"[警告] 前端资源持久化失败，回退解压目录: {e}")
+        print(f"[警告] {label}持久化失败，回退解压目录: {e}")
         return src
+
+
+def stage_frontend(root: str) -> str:
+    """前端资源目录（见 _stage_versioned）：以 index.html 判断副本是否可用。"""
+    src = os.path.join(getattr(sys, "_MEIPASS", PROJECT_ROOT), "frontend")
+    return _stage_versioned(src, os.path.join(root, "frontend"),
+                            lambda d: os.path.isfile(os.path.join(d, "index.html")), "前端资源")
+
+
+def _notes_ready(d: str) -> bool:
+    return os.path.isdir(d) and any(name.endswith(".md") for name in os.listdir(d))
+
+
+def stage_release_notes(root: str) -> str:
+    """发布说明目录（见 _stage_versioned）：以目录内存在 .md 判断副本是否可用。"""
+    return _stage_versioned(NOTES_DIR, os.path.join(root, "release-notes"), _notes_ready, "发布说明")
+
+
+# ---------- 更新历史（release-notes/*.md → GET /api/changelog） ----------
+
+_NOTES_H2_RE = re.compile(r"^##\s+(.+?)\s*$")
+_NOTES_H3_RE = re.compile(r"^###\s+(.+?)\s*$")
+_NOTES_BULLET_RE = re.compile(r"^\s*[-*]\s+(.+?)\s*$")
+_NOTES_LINK_RE = re.compile(r"Full Changelog[^\n]*?(https?://\S+)", re.IGNORECASE)
+
+
+def version_sort_key(version: str) -> tuple:
+    """版本排序键：同号下正式版排在预发布版之前，预发布之间按后缀逐段比较。
+
+    不能用 tuple(int(x) for x in version.split("."))：预发布号如 "1.0.0-rc.1"
+    会切出非整数的段，直接转 int 抛 ValueError。
+    """
+    core = version.lstrip("v")
+    pre = ""
+    if "-" in core:
+        core, pre = core.split("-", 1)
+    nums = tuple(int(x) if x.isdigit() else 0 for x in core.split("."))
+    if not pre:
+        return (nums, 1, ())
+    return (nums, 0, tuple(int(x) if x.isdigit() else 0 for x in re.split(r"[._-]", pre)))
+
+
+def parse_release_note(text: str, version: str) -> dict:
+    """把一份 release-notes 正文解析成 {version, title, sections, link}。
+
+    版本号取自文件名（v0.3.x 的旧说明正文里没有版本号）；title 取首个 "## " 标题并去掉
+    开头的版本号前缀；items 收 "### " 小节下的 "-" 列表项与散文段落（围栏代码块、引用、
+    表格、分隔线不进历史）；出现在任何小节之前的内容归入标题为空的小节，不静默丢弃。
+    """
+    title = ""
+    sections = []
+
+    def add_item(value: str) -> None:
+        if not sections:
+            sections.append({"title": "", "items": []})
+        sections[-1]["items"].append(value)
+
+    link = ""
+    in_fence = False
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if line.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = _NOTES_H3_RE.match(line)
+        if m:
+            sections.append({"title": m.group(1), "items": []})
+            continue
+        m = _NOTES_H2_RE.match(line)
+        if m:
+            if not title:
+                title = m.group(1)
+            continue
+        m = _NOTES_BULLET_RE.match(line)
+        if m:
+            add_item(m.group(1))
+            continue
+        m = _NOTES_LINK_RE.search(line)
+        if m:
+            link = m.group(1)
+            continue
+        # 散文段落（说明开头常有一段「这一版做了什么」，v0.6.3 的「根因」整节都是散文）
+        if line and not line.startswith((">", "|", "#", "---", "***")):
+            add_item(line)
+    for prefix in (f"{version}：", f"{version}:", f"v{version}：", f"v{version}:"):
+        if title.startswith(prefix):
+            title = title[len(prefix):].strip()
+            break
+    return {"version": version, "title": title, "sections": sections, "link": link}
+
+
+def load_releases(notes_dir: str) -> list:
+    """读取 notes_dir 下的 v*.md，按版本倒序返回；目录不可读或无说明文件时返回空列表。"""
+    try:
+        names = os.listdir(notes_dir)
+    except OSError:
+        return []
+    releases = []
+    for name in sorted(names):
+        if not (name.startswith("v") and name.endswith(".md")):
+            continue
+        version = name[1:-3]
+        if not version or not version[0].isdigit():
+            continue
+        try:
+            with open(os.path.join(notes_dir, name), "r", encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except OSError:
+            continue
+        releases.append(parse_release_note(text, version))
+    releases.sort(key=lambda r: version_sort_key(r["version"]), reverse=True)
+    return releases
 
 
 # ---------- 单实例 ----------
@@ -484,7 +604,7 @@ class Server(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "nginx-manager/1.0.0-rc.1"
+    server_version = "nginx-manager/1.0.0-rc.2"
     settings: SettingsStore = None  # type: ignore
     data_dirs: dict = {}
     controller: NginxController = None  # type: ignore
@@ -628,6 +748,8 @@ class Handler(BaseHTTPRequestHandler):
     def _route_api_get(self, path: str, qs: dict) -> None:
         if path == "/api/status":
             self._api_status()
+        elif path == "/api/changelog":
+            self._api_changelog()
         elif path == "/api/config":
             self._api_config()
         elif path == "/api/config/file":
@@ -661,6 +783,7 @@ class Handler(BaseHTTPRequestHandler):
                 "nginxPath": self.settings.get("nginxPath"),
                 "confDir": self.settings.get("confDir"),
                 "confPath": None, "confFileExists": False,
+                "managerVersion": manager_version(),
                 "frontendOk": frontend_ok,
             })
             return
@@ -684,7 +807,20 @@ class Handler(BaseHTTPRequestHandler):
                 _status_cache["data"] = data
                 _status_cache["ts"] = time.time()
         data["frontendOk"] = frontend_ok  # 缓存外现算：资源健康度不受 15s TTL 影响
+        data["managerVersion"] = manager_version()  # 缓存外现算：运行版本与 TTL 无关
         self._ok(data)
+
+    def _api_changelog(self) -> None:
+        """更新历史：release-notes/*.md 按版本倒序（最新在前）。
+
+        纯本地读取，不做任何联网更新检查——本产品没有自动更新。
+        """
+        releases = load_releases(NOTES_DIR)
+        self._ok({
+            "version": manager_version(),
+            "releases": releases,
+            "notesAvailable": bool(releases),
+        })
 
     def _api_config(self) -> None:
         if self.controller is None:
@@ -1707,12 +1843,20 @@ def main() -> int:
     BACKUP_RETENTION = int(Handler.settings.get("backupRetention", 7) or 7)
 
     # exe 运行时把前端资源持久化到数据目录，避免 %TEMP% 解压目录被清理后页面 404
-    global FRONTEND_DIR
+    global FRONTEND_DIR, NOTES_DIR
     FRONTEND_DIR = stage_frontend(data_dirs["root"])
     if os.path.isfile(os.path.join(FRONTEND_DIR, "index.html")):
         print(f"[前端] 资源目录: {FRONTEND_DIR}")
     else:
         print(f"[警告] 前端资源缺失（{FRONTEND_DIR} 下无 index.html），页面将无法打开")
+
+    # 发布说明（界面「更新历史」）同样持久化：解压目录被清理时只剩历史为空，其余功能不受影响
+    NOTES_DIR = stage_release_notes(data_dirs["root"])
+    _note_count = len(load_releases(NOTES_DIR))
+    if _note_count:
+        print(f"[更新历史] 发布说明目录: {NOTES_DIR}（{_note_count} 个版本）")
+    else:
+        print(f"[警告] 未找到发布说明（{NOTES_DIR} 下无 v*.md），界面更新历史将为空")
 
     # 单实例：若已有旧实例在运行，强制终止，以当前启动为准
     lock_path = os.path.join(data_dirs["root"], "instance.lock")
