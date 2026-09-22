@@ -76,7 +76,8 @@ const App = (() => {
     $("#dashboard").hidden = false;
     updateReloadHint();
     refreshStatus();
-    await Promise.all([loadTree(), loadBackups(), loadErrorLog(), loadAccessLog()]);
+    await Promise.all([loadTree(), loadBackups(), logPoll(logPanes.errorlog), logPoll(logPanes.accesslog)]);
+    Object.keys(logPanes).forEach((key) => logUpdateUI(logPanes[key]));   // 跟随按钮初态与状态一致
     if (preview) {
       toast("预览模式：未配置 nginx，可浏览界面；点「设置」配置后可操作", "info");
     } else {
@@ -147,11 +148,24 @@ const App = (() => {
     });
     // 备份/日志
     $("#btnRefreshBackups").addEventListener("click", loadBackups);
-    $("#btnRefreshLog").addEventListener("click", loadErrorLog);
-    // 访问日志
-    $("#btnRefreshAccessLog").addEventListener("click", loadAccessLog);
-    $("#accessLogPath").addEventListener("change", loadAccessLog);
-    $("#accessLogFilter").addEventListener("input", debounce(renderAccessLog, 150));
+    // 错误日志：刷新（全量重载 + 回到跟随最新）、暂停/继续跟随、往上滚自动暂停
+    $("#btnRefreshLog").addEventListener("click", () => logReload(logPanes.errorlog));
+    $("#btnFollowErrorLog").addEventListener("click", () => logToggleFollow(logPanes.errorlog));
+    logBindScroll(logPanes.errorlog);
+    // 访问日志：切换文件=重载、过滤=本地实时过滤、自动滚动同上
+    $("#btnRefreshAccessLog").addEventListener("click", () => logReload(logPanes.accesslog));
+    $("#btnFollowAccessLog").addEventListener("click", () => logToggleFollow(logPanes.accesslog));
+    $("#accessLogPath").addEventListener("change", () => logReload(logPanes.accesslog));
+    $("#accessLogFilter").addEventListener("input", debounce(() => logRender(logPanes.accesslog), 150));
+    logBindScroll(logPanes.accesslog);
+    // 页面切到后台时停掉日志轮询（回来再续），不可见时空转没有意义
+    document.addEventListener("visibilitychange", () => {
+      Object.keys(logPanes).forEach((key) => {
+        const st = logPanes[key];
+        if (document.hidden) logStop(st);
+        else if (st.active) logStart(st);
+      });
+    });
     // 负载均衡 upstream
     $("#btnRefreshUpstreams").addEventListener("click", loadUpstreams);
     $("#btnAddUpstream").addEventListener("click", () => openUpstreamModal(null));
@@ -304,6 +318,8 @@ const App = (() => {
       tab.tabIndex = active ? 0 : -1;
       $(ref.body).hidden = !active;
     });
+    // 只有当前可见的日志面板才轮询；切走即停，切回立刻拉一次
+    Object.keys(logPanes).forEach((key) => logActivate(logPanes[key], key === name));
   }
 
   /* ---------- 向导保存 ---------- */
@@ -429,7 +445,7 @@ const App = (() => {
       await loadTree();
       refreshStatus();
       loadBackups();
-      loadErrorLog();
+      logReload(logPanes.errorlog);
       loadProxies();
       loadPool();
     } catch (e) {
@@ -1167,68 +1183,179 @@ const App = (() => {
     }
   }
 
-  /* ---------- 错误日志 ---------- */
-  async function loadErrorLog() {
+  /* ---------- 日志查看：实时跟随 + 可暂停 ----------
+     后端按字节偏移增量下发（offset 只在完整行边界前进），前端只做「追加」：
+     跟随时不重建 DOM，用户正在看的位置不会被顶掉。三种状态：
+       - 跟随中：拉到新内容后贴底滚动；
+       - 已暂停：点了暂停，或自己往上滚离底部（自动暂停）；新内容照常追加但不动滚动位置，
+         工具栏提示累计新行数，点跟随按钮即恢复（跳回最新）；
+       - 预览模式：无 nginx，只渲染一次占位文案，不轮询。
+     缓冲区按行数封顶，面板长时间开着也不会把内存吃掉。 */
+  const LOG_POLL_MS = 1000;      // 跟随轮询间隔
+  const LOG_MAX_LINES = 5000;    // 前端缓冲上限（与后端单次返回上限一致）
+  const LOG_BOTTOM_SLACK = 8;    // 距底部多少像素内算「贴底」
+
+  const logPanes = {
+    errorlog: {
+      pre: "#errorLog", hint: "#errorLogHint", btn: "#btnFollowErrorLog",
+      pathLabel: "#logPathLabel", empty: "（错误日志为空或文件不存在）",
+      fetch: (since) => api.errorLog(200, since),
+    },
+    accesslog: {
+      pre: "#accessLog", hint: "#accessLogHint", btn: "#btnFollowAccessLog",
+      pathLabel: "#accessLogPathLabel", pathSelect: "#accessLogPath", filter: "#accessLogFilter",
+      empty: "（访问日志为空或文件不存在）",
+      fetch: (since) => api.accessLog(500, $("#accessLogPath").value || "", since),
+    },
+  };
+  Object.keys(logPanes).forEach((key) => Object.assign(logPanes[key], {
+    follow: true,    // 是否跟随（贴底自动滚动）
+    offset: null,    // 下次增量读取的起始字节偏移；null = 尚未加载
+    raw: "",         // 已加载的原始文本（过滤在此之上做）
+    pending: 0,      // 暂停期间累计的新行数
+    loading: false,
+    timer: null,
+    active: false,   // 当前停靠页签是否是它（只有可见面板才轮询）
+  }));
+
+  function logAtBottom(el) { return el.scrollHeight - el.scrollTop - el.clientHeight <= LOG_BOTTOM_SLACK; }
+
+  /* 访问日志的本地过滤关键词；无过滤时为空串，走「只追加」的快路径 */
+  function logKeyword(st) { return st.filter ? $(st.filter).value.trim().toLowerCase() : ""; }
+
+  /* 缓冲按行封顶，超限从头部丢弃；返回是否真的裁过（裁过就得整体重渲染） */
+  function logTrim(st) {
+    const lines = st.raw.split("\n");
+    if (lines.length <= LOG_MAX_LINES + 1) return false;
+    st.raw = lines.slice(lines.length - LOG_MAX_LINES - 1).join("\n");
+    return true;
+  }
+
+  function logRender(st) {
+    const el = $(st.pre);
+    const keep = el.scrollTop;
+    const kw = logKeyword(st);
+    if (!st.raw) el.textContent = st.empty;
+    else if (!kw) el.textContent = st.raw;
+    else {
+      const hit = st.raw.split("\n").filter((l) => l.toLowerCase().includes(kw));
+      el.textContent = hit.length ? hit.join("\n") : "（无匹配行）";
+    }
+    el.scrollTop = st.follow ? el.scrollHeight : Math.min(keep, el.scrollHeight);
+  }
+
+  /* 并入一段新内容；replace=true 表示全量重置（首次加载 / 日志轮转 / 手动刷新） */
+  function logMerge(st, text, replace) {
+    if (replace) st.raw = "";
+    if (!text) { if (replace) logRender(st); return; }
+    st.raw += text;
+    if (replace || logKeyword(st) || logTrim(st)) logRender(st);
+    else {
+      $(st.pre).appendChild(document.createTextNode(text));
+      if (st.follow) $(st.pre).scrollTop = $(st.pre).scrollHeight;
+    }
+  }
+
+  function logUpdateUI(st) {
+    const btn = $(st.btn);
+    const icon = btn.querySelector("use");
+    if (icon) icon.setAttribute("href", st.follow ? "#i-pause" : "#i-play");
+    btn.setAttribute("aria-pressed", st.follow ? "true" : "false");
+    btn.title = st.follow ? "暂停实时跟随（暂停后不再自动滚动）" : "继续实时跟随（跳到最新）";
+    const hint = $(st.hint);
+    const show = !st.follow && st.pending > 0;
+    hint.hidden = !show;
+    hint.textContent = show ? "已暂停 · 新日志 " + st.pending + " 行" : "";
+  }
+
+  async function logPoll(st) {
+    if (st.loading) return;
+    st.loading = true;
     try {
-      const data = await api.errorLog(200);
-      $("#logPathLabel").textContent = data.logPath ? "📄 " + data.logPath : "";
-      $("#errorLog").textContent = data.content || "（错误日志为空或文件不存在）";
+      const data = await st.fetch(st.offset === null ? undefined : st.offset);
+      const label = $(st.pathLabel);
+      if (label) label.textContent = data.logPath ? "📄 " + data.logPath : "";
+      if (st.pathSelect) logFillPathSelect(st, data);
+      const text = data.content || "";
+      // 后端只在完整行边界下发，故按换行数即可准确计新增行
+      const added = (text.match(/\n/g) || []).length;
+      logMerge(st, text, !!data.reset || st.offset === null);
+      if (typeof data.offset === "number") st.offset = data.offset;
+      if (added && !st.follow) st.pending += added;
+      logUpdateUI(st);
+      if (data.hasMore) setTimeout(() => logPoll(st), 0);   // 还有积压：立刻续取，不等下个周期
     } catch (e) {
+      logStop(st);        // 停表：否则每秒弹一次同样的错误
       toast(e.message, "error");
+    } finally {
+      st.loading = false;
     }
   }
 
-  /* ---------- 访问日志（尾部 500 行，过滤为本地过滤） ---------- */
-  let accessLogRaw = "";
+  /* 候选日志文件下拉只在选项真的变化时重建，避免轮询打断用户正在做的选择 */
+  function logFillPathSelect(st, data) {
+    const sel = $(st.pathSelect);
+    const paths = data.paths || [];
+    if (!paths.length) { sel.hidden = true; return; }
+    sel.hidden = false;
+    const same = sel.options.length === paths.length
+      && paths.every((p, i) => sel.options[i].value === p);
+    if (same) return;
+    const cur = sel.value || data.logPath || "";
+    sel.innerHTML = "";
+    paths.forEach((p) => {
+      const o = document.createElement("option");
+      o.value = p;
+      o.textContent = p;
+      if (p === cur) o.selected = true;
+      sel.appendChild(o);
+    });
+  }
 
-  async function loadAccessLog() {
-    const sel = $("#accessLogPath");
-    if (preview) {
-      accessLogRaw = "";
-      $("#accessLog").textContent = "（预览模式：未配置 nginx，暂无访问日志）";
-      $("#accessLogPathLabel").textContent = "";
-      sel.hidden = true;
-      return;
+  function logStart(st) {
+    if (st.timer || preview) return;   // 预览模式没有可跟随的内容，不轮询
+    st.timer = setInterval(() => logPoll(st), LOG_POLL_MS);
+  }
+
+  function logStop(st) {
+    if (st.timer) { clearInterval(st.timer); st.timer = null; }
+  }
+
+  /* 只有当前可见的停靠面板才轮询：切走即停，不在后台空转 */
+  function logActivate(st, on) {
+    st.active = !!on;
+    if (on) { logStart(st); logPoll(st); }
+    else logStop(st);
+  }
+
+  /* 全量重载并回到「跟随最新」（手动刷新、切换日志文件都走这里） */
+  function logReload(st) {
+    st.offset = null;
+    st.pending = 0;
+    st.follow = true;
+    logPoll(st);
+  }
+
+  function logToggleFollow(st) {
+    st.follow = !st.follow;
+    if (st.follow) {
+      st.pending = 0;
+      const el = $(st.pre);
+      el.scrollTop = el.scrollHeight;
     }
-    try {
-      const data = await api.accessLog(500, sel.value || "");
-      accessLogRaw = data.content || "";
-      $("#accessLogPathLabel").textContent = data.logPath ? "📄 " + data.logPath : "";
-      const paths = data.paths || [];
-      if (paths.length) {
-        sel.hidden = false;
-        const cur = sel.value || data.logPath || "";
-        sel.innerHTML = "";
-        paths.forEach((p) => {
-          const o = document.createElement("option");
-          o.value = p;
-          o.textContent = p;
-          if (p === cur) o.selected = true;
-          sel.appendChild(o);
-        });
-      } else {
-        sel.hidden = true;
+    logUpdateUI(st);
+  }
+
+  /* 往上滚 = 想停下来看：自动暂停。程序化贴底时仍在底部，不会误触发。
+     反向（滚回底部自动恢复）刻意不做：暂停必须由用户自己解除，
+     否则过滤/重渲染把内容变短时会静默恢复跟随，用户会以为「我暂停了它自己又滚起来」。 */
+  function logBindScroll(st) {
+    $(st.pre).addEventListener("scroll", () => {
+      if (st.follow && !logAtBottom($(st.pre))) {
+        st.follow = false;
+        logUpdateUI(st);
       }
-      renderAccessLog();
-    } catch (e) {
-      accessLogRaw = "";
-      $("#accessLog").textContent = "加载失败：" + e.message;
-    }
-  }
-
-  function renderAccessLog() {
-    const el = $("#accessLog");
-    if (!accessLogRaw) {
-      el.textContent = "（访问日志为空或文件不存在）";
-      return;
-    }
-    const kw = $("#accessLogFilter").value.trim().toLowerCase();
-    if (!kw) {
-      el.textContent = accessLogRaw;
-      return;
-    }
-    const lines = accessLogRaw.split("\n").filter((l) => l.toLowerCase().includes(kw));
-    el.textContent = lines.length ? lines.join("\n") : "（无匹配行）";
+    });
   }
 
   /* ---------- 代理管理 ---------- */

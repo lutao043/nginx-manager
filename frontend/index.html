@@ -33,6 +33,7 @@
   <symbol id="i-file" viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/></symbol>
   <symbol id="i-palette" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18h1.5a1.8 1.8 0 0 0 0-3.6H13a1.8 1.8 0 0 1 0-3.6h4.2A3.8 3.8 0 0 0 21 10 7.5 7.5 0 0 0 12 3z"/><circle cx="8.5" cy="10" r="1.2"/><circle cx="12" cy="7.5" r="1.2"/><circle cx="15.5" cy="10" r="1.2"/></symbol>
   <symbol id="i-play" viewBox="0 0 24 24"><path d="M8.5 5.2l9.6 6.8-9.6 6.8z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9.5 5v14M14.5 5v14"/></symbol>
   <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/></symbol>
   <symbol id="i-restart" viewBox="0 0 24 24"><path d="M12 4v7"/><path d="M7.5 6.6a7 7 0 1 0 9 0"/></symbol>
   <symbol id="i-reload" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.66-5.66M20 12a8 8 0 0 1-13.66 5.66"/><path d="M18 3v4h-4M6 21v-4h4"/></symbol>
@@ -221,6 +222,10 @@
                 <div class="dock-toolbar">
                   <span class="dock-path mono small" id="logPathLabel"></span>
                   <span class="dock-spacer"></span>
+                  <span class="log-follow-hint" id="errorLogHint" role="status" hidden></span>
+                  <button id="btnFollowErrorLog" class="btn btn-icon btn-mini" type="button" aria-pressed="true" title="暂停实时跟随" aria-label="实时跟随错误日志">
+                    <svg class="i"><use href="#i-pause"/></svg>
+                  </button>
                   <button id="btnRefreshLog" class="btn btn-icon btn-mini" type="button" title="刷新错误日志" aria-label="刷新错误日志">
                     <svg class="i"><use href="#i-refresh"/></svg>
                   </button>
@@ -233,6 +238,11 @@
                   <span class="dock-path mono small" id="accessLogPathLabel"></span>
                   <select id="accessLogPath" class="log-path-select" title="切换日志文件" hidden></select>
                   <input id="accessLogFilter" class="input-search dock-filter" type="text" placeholder="过滤访问日志…" autocomplete="off">
+                  <span class="dock-spacer"></span>
+                  <span class="log-follow-hint" id="accessLogHint" role="status" hidden></span>
+                  <button id="btnFollowAccessLog" class="btn btn-icon btn-mini" type="button" aria-pressed="true" title="暂停实时跟随" aria-label="实时跟随访问日志">
+                    <svg class="i"><use href="#i-pause"/></svg>
+                  </button>
                   <button id="btnRefreshAccessLog" class="btn btn-icon btn-mini" type="button" title="刷新访问日志" aria-label="刷新访问日志">
                     <svg class="i"><use href="#i-refresh"/></svg>
                   </button>

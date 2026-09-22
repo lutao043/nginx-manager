@@ -628,6 +628,14 @@ class NginxController:
         except OSError:
             return log_path, ""
 
+    def read_error_log_since(self, since: Optional[int] = None, lines: int = 200):
+        """错误日志的尾部/增量读取，返回 (logPath, content, offset, size, reset, hasMore)。"""
+        log_path = self.locate_error_log()
+        if not log_path:
+            return None, "", 0, 0, since is not None, False
+        content, offset, size, reset, has_more = self.read_log_since(log_path, since, lines)
+        return log_path, content, offset, size, reset, has_more
+
     # ---------- 访问日志 ----------
 
     _ACCESS_LOG_RE = re.compile(r"^\s*access_log\s+([^;]+);")
@@ -683,6 +691,58 @@ class NginxController:
             return "".join(tail)
         except OSError:
             return ""
+
+    # 单次增量返回的字节上限：实时跟随按固定间隔拉取，一次读太多既无必要也吃内存
+    LOG_CHUNK_MAX_BYTES = 256 * 1024
+    # 单次返回的行数上限（与尾部读取一致）
+    LOG_MAX_LINES = 5000
+
+    def read_log_since(self, path: str, since: Optional[int] = None, lines: int = 500):
+        """日志尾部 / 增量读取，返回 (content, offset, size, reset, hasMore)。
+
+        - `since` 缺省、为负或大于文件大小（日志被轮转/清空）→ 按尾部 `lines` 行读取并置 reset=True，
+          `offset` 直接对齐到文件末尾（尾部之前的内容按设计不再重复下发）。
+        - 否则只返回 `since` 之后的新增内容：**offset 只前进到最后一个换行符之后**，尾部尚未写完的
+          半行不下发，等写全后的下一次请求再取。这样客户端每次拿到的都是整行，也不会出现半个多字节字符。
+        - 单次最多返回 LOG_CHUNK_MAX_BYTES 字节；刚好读满上限且文件还有更多内容时 `hasMore=True`，
+          提示客户端立刻再取一次，避免空转等下一个轮询周期。
+        """
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            # 文件不存在/不可读：offset 给 0，客户端不必再沿用旧偏移
+            return "", 0, 0, since is not None, False
+
+        max_lines = max(1, min(int(lines), self.LOG_MAX_LINES))
+        if since is None or since < 0 or since > size:
+            return self.read_log_file(path, max_lines), size, size, True, False
+
+        try:
+            with open(path, "rb") as f:          # 二进制读：偏移才是精确的字节位置
+                f.seek(since)
+                chunk = f.read(self.LOG_CHUNK_MAX_BYTES)
+        except OSError:
+            return "", since, size, False, False
+        if not chunk:
+            return "", since, size, False, False
+
+        text = chunk.decode("utf-8", errors="replace")
+        cut = text.rfind("\n")
+        reach_cap = len(chunk) >= self.LOG_CHUNK_MAX_BYTES
+        if cut < 0:
+            if not reach_cap:
+                return "", since, size, False, False      # 只有半行：等写完再取
+            # 单行就超过单次上限（极端情况）：整段下发以保证进度，允许该行被切开
+            offset = since + len(chunk)
+            return text, offset, size, False, offset < size
+
+        delivered = text[:cut + 1]
+        offset = since + len(delivered.encode("utf-8"))
+        # 行数上限（正常轮询到不了；一次积压很多时才触发），裁掉头部后 offset 仍是正确的读取位置
+        kept = delivered.split("\n")
+        if len(kept) - 1 > max_lines:
+            delivered = "".join(kept[-(max_lines + 1):])
+        return delivered, offset, size, False, reach_cap and offset < size
 
     # ---------- stub_status 实时指标 ----------
 

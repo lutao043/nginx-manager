@@ -286,6 +286,41 @@ def main():
         check("错误日志读取（真实 error.log）", st == 200 and bool(body.get("content")),
               "logPath=%s %d 字节" % (body.get("logPath"), len(body.get("content", ""))))
 
+        # ---- 8b. 实时跟随的增量读取（真实日志文件） ----
+        marker = "/e2e-follow-%d" % os.getpid()
+        raw_get(site_url + marker)                       # 真实请求 → 真实 access.log 新增一行
+        time.sleep(0.4)                                  # 等 nginx flush（access_log 有缓冲）
+        st, first = http("GET", base + "/api/logs/access?lines=20")
+        check("增量跟随：首帧为尾部快照（reset + 偏移对齐文件末尾）",
+              st == 200 and first.get("reset") is True and first.get("offset") == first.get("size"),
+              "offset=%s size=%s" % (first.get("offset"), first.get("size")))
+        raw_get(site_url + marker)                       # 再产生一行新日志
+        time.sleep(0.4)
+        st, inc = http("GET", base + "/api/logs/access?lines=20&since=%s" % first.get("offset"))
+        check("增量跟随：只取新增行（reset=False 且含本次请求）",
+              st == 200 and inc.get("reset") is False and marker in inc.get("content", ""),
+              "新增 %d 字节，含标记=%s" % (len(inc.get("content", "")), marker in inc.get("content", "")))
+        st, again = http("GET", base + "/api/logs/access?lines=20&since=%s" % inc.get("offset"))
+        check("增量跟随：偏移用尽后不再重复下发", st == 200 and again.get("content") == "",
+              "content=%r" % again.get("content"))
+
+        error_log = os.path.join(LOGS, "error.log")
+        before = os.path.getsize(error_log)
+        st, first_err = http("GET", base + "/api/logs/error?lines=20")
+        with open(error_log, "a", encoding="utf-8") as f:
+            f.write("2026/09/22 10:00:00 [error] 半行写入中")   # 模拟写入中：没有换行符
+        st, mid = http("GET", base + "/api/logs/error?since=%s" % first_err.get("offset"))
+        check("增量跟随：未写完的半行不下发（偏移不前进）",
+              st == 200 and mid.get("content") == "" and mid.get("offset") == first_err.get("offset"),
+              "content=%r offset=%s" % (mid.get("content"), mid.get("offset")))
+        with open(error_log, "a", encoding="utf-8") as f:
+            f.write("（补完）\n")
+        st, done = http("GET", base + "/api/logs/error?since=%s" % first_err.get("offset"))
+        check("增量跟随：补齐换行后整行取到",
+              st == 200 and "半行写入中（补完）" in done.get("content", ""),
+              "取到 %d 字节（文件 %d → %d）" % (len(done.get("content", "").encode("utf-8")),
+                                                before, os.path.getsize(error_log)))
+
         # ---- 9. 安全边界抽查 ----
         st, body = http("GET", base + "/api/config/file?path=../../etc/passwd")
         check("路径穿越被拒", st == 400, "status=%s body=%s" % (st, body.get("error")))

@@ -64,10 +64,15 @@ const api = {
     return this.get("/api/backups/diff?a=" + encodeURIComponent(a)
       + "&b=" + encodeURIComponent(b) + "&path=" + encodeURIComponent(path));
   },
-  errorLog(lines) { return this.get("/api/logs/error?lines=" + (lines || 200)); },
-  accessLog(lines, path) {
+  errorLog(lines, since) {
+    let p = "/api/logs/error?lines=" + (lines || 200);
+    if (since !== undefined && since !== null) p += "&since=" + Math.floor(since);
+    return this.get(p);
+  },
+  accessLog(lines, path, since) {
     let p = "/api/logs/access?lines=" + (lines || 500);
     if (path) p += "&path=" + encodeURIComponent(path);
+    if (since !== undefined && since !== null) p += "&since=" + Math.floor(since);
     return this.get(p);
   },
   metrics() { return this.get("/api/metrics"); },

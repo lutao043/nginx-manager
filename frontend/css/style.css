@@ -499,6 +499,12 @@ select:focus{border-color:var(--accent);box-shadow:var(--ring)}
 .dock-path{color:var(--text-4);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto}
 .dock-toolbar .dock-filter{max-width:340px;height:28px}
 .log-path-select{height:28px;flex:0 1 auto}
+/* 实时跟随：暂停/未读提示。用 --warn 对面板底（已在对比度门禁的已审计配色对内），
+   并让它先于路径与按钮收缩，窄窗口下不会把按钮挤出去 */
+.log-follow-hint{
+  flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  color:var(--warn);font-size:var(--fs-sm);
+}
 
 .backup-list{flex:1;min-height:0;display:flex;flex-direction:column;gap:6px;overflow:auto}
 .backup-item{

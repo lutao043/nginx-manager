@@ -325,39 +325,50 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 
 ### GET /api/logs/error
 
-返回错误日志尾部（默认最后 200 行）。
+返回错误日志。缺省返回尾部 `lines` 行（快照）；带 `since` 时按**字节偏移做增量读取**，供前端实时跟随。
 
 **参数**
-- `lines`（可选，默认 200）。
+- `lines`（可选，默认 200，上限 5000）：尾部读取的行数；增量模式下同时作为单次返回的行数上限。
+- `since`（可选，字节偏移）：只返回该偏移之后的新增内容。非整数或负数视为缺省。
+  偏移大于文件大小（日志被轮转/清空）时按尾部读取处理并置 `reset=true`。
 
 **成功响应 200**
 
 ```json
-{ "logPath": "C:/nginx/logs/error.log", "content": "2026/08/04 19:00:00 [error] ..." }
+{ "logPath": "C:/nginx/logs/error.log", "content": "2026/08/04 19:00:00 [error] ...", "offset": 1935, "size": 1935, "reset": true, "hasMore": false }
 ```
 
 - `logPath`：自动定位（confDir 同级 logs/error.log）；文件不存在时 `content` 为空字符串。
-- **预览模式**：`controller is None` 时返回 `{"logPath": null, "content": "（预览模式：未配置 nginx，暂无错误日志）"}`。
+- `offset`：本次已交付内容的结束字节偏移，下次增量读取原样回传给 `since`。**只前进到完整行边界**：
+  尾部尚未写完的半行不下发（等写全后的下一次请求再取），客户端因此始终拿到整行，也不会被截出半个多字节字符。
+- `size`：本次读取完成时的文件字节大小。
+- `reset`：本次是全量重置（首次读取，或文件被轮转/清空导致偏移失效），客户端应丢弃旧缓冲区。
+- `hasMore`：仍有未交付内容（单次返回受 256 KiB 字节上限约束），客户端应立即再取一次。
+- **预览模式**：`controller is None` 时返回 `{"logPath": null, "content": "（预览模式：未配置 nginx，暂无错误日志）", "offset": 0, "size": 0, "reset": true, "hasMore": false}`。
 
 ### GET /api/logs/access
 
-返回访问日志尾部（默认最后 500 行），并给出检测到的候选日志路径。
+返回访问日志，并给出检测到的候选日志路径。缺省返回尾部 `lines` 行；带 `since` 时同上做增量读取。
 
 **参数**
 - `lines`（可选，默认 500，上限 5000）。
 - `path`（可选，绝对路径）：指定读取哪个访问日志文件；缺省时取候选中第一个实际存在的文件。
+- `since`（可选，字节偏移）：同 `/api/logs/error`。
 
 **成功响应 200**
 
 ```json
-{ "logPath": "C:/nginx/logs/access.log", "paths": ["C:/nginx/logs/access.log"], "content": "127.0.0.1 - - [04/Aug/2026 ...] \"GET / HTTP/1.1\" 200 ..." }
+{ "logPath": "C:/nginx/logs/access.log", "paths": ["C:/nginx/logs/access.log"], "content": "127.0.0.1 - - [04/Aug/2026 ...] \"GET / HTTP/1.1\" 200 ...", "offset": 4096, "size": 4096, "reset": false, "hasMore": false }
 ```
 
 - `paths`：从配置文件 `access_log` 指令解析出的候选路径（相对 prefix 解析）+ 默认兜底路径（prefix/logs/access.log 等），按此顺序去重排列。
 - 文件不存在时 `content` 为空字符串（`logPath` 仍返回候选路径）。
+- `offset` / `size` / `reset` / `hasMore`：语义同 `/api/logs/error`。
+- **预览模式**：`controller is None` 时返回 `{"logPath": null, "paths": [], "content": "（预览模式：未配置 nginx，暂无访问日志）", "offset": 0, "size": 0, "reset": true, "hasMore": false}`。
 
 **错误**
-- `403`：`path` 越出 prefix / confDir 范围（防任意文件读取）。
+- `403`：`path` 既越出 prefix / confDir 范围，又不在配置声明的候选路径中（防任意文件读取）。
+  配置里自己声明的日志路径（即 `paths` 中的项）允许显式传入 —— 缺省分支本就会读它。
 
 ### GET /api/metrics
 

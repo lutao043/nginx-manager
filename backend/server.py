@@ -31,6 +31,7 @@ import time
 import webbrowser
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 from nginxctl import NginxController, create_controller
@@ -787,44 +788,52 @@ class Handler(BaseHTTPRequestHandler):
     def _api_logs_error(self, qs: dict) -> None:
         if self.controller is None:
             # 预览模式：无 nginx，无错误日志可读
-            self._ok({"logPath": None, "content": "（预览模式：未配置 nginx，暂无错误日志）"})
+            self._ok({"logPath": None, "content": "（预览模式：未配置 nginx，暂无错误日志）",
+                      "offset": 0, "size": 0, "reset": True, "hasMore": False})
             return
         ctl = self._require_controller()
         if ctl is None:
             return
-        try:
-            lines = int((qs.get("lines") or ["200"])[0])
-        except ValueError:
-            lines = 200
-        log_path, content = ctl.read_error_log(lines)
-        self._ok({"logPath": log_path, "content": content})
+        lines = _int_arg(qs, "lines", 200) or 200
+        log_path, content, offset, size, reset, has_more = ctl.read_error_log_since(
+            _offset_arg(qs), lines)
+        self._ok({"logPath": log_path, "content": content, "offset": offset,
+                  "size": size, "reset": reset, "hasMore": has_more})
 
     def _api_logs_access(self, qs: dict) -> None:
         if self.controller is None:
-            self._ok({"logPath": None, "paths": [], "content": "（预览模式：未配置 nginx，暂无访问日志）"})
+            self._ok({"logPath": None, "paths": [],
+                      "content": "（预览模式：未配置 nginx，暂无访问日志）",
+                      "offset": 0, "size": 0, "reset": True, "hasMore": False})
             return
         ctl = self._require_controller()
         if ctl is None:
             return
-        try:
-            lines = int((qs.get("lines") or ["500"])[0])
-        except ValueError:
-            lines = 500
+        lines = _int_arg(qs, "lines", 500) or 500
         paths = ctl.find_access_log_paths()
         sel = (qs.get("path") or [""])[0].strip()
         if sel:
             abs_sel = os.path.abspath(sel)
             prefix = os.path.abspath(ctl.prefix)
             conf_root = os.path.abspath(ctl.conf_dir)
+            # 除 prefix/confDir 之外，还允许「用户自己 nginx.conf 里声明的候选路径」：
+            # 候选是服务端从配置解析出来的，缺省分支本来就会读它；若显式传回同一路径反而被拒，
+            # 就会出现「下拉里选中同一个文件 → 403」的自相矛盾（发行版把日志写到 /var/log 这类
+            # prefix 之外的位置时必现）。仍拒绝其他任意路径。
+            declared = {os.path.abspath(p) for p in paths}
             if not (abs_sel.startswith(prefix + os.sep) or abs_sel.startswith(conf_root + os.sep)
-                    or abs_sel in (prefix, conf_root)):
+                    or abs_sel in (prefix, conf_root) or abs_sel in declared):
                 self._err(403, "日志路径越出 nginx 目录范围")
                 return
             log_path = abs_sel
         else:
             log_path = next((p for p in paths if os.path.isfile(p)), paths[0] if paths else None)
-        content = ctl.read_log_file(log_path, lines) if log_path else ""
-        self._ok({"logPath": log_path, "paths": paths, "content": content})
+        since = _offset_arg(qs)
+        content, offset, size, reset, has_more = (
+            ctl.read_log_since(log_path, since, lines) if log_path
+            else ("", 0, 0, since is not None, False))
+        self._ok({"logPath": log_path, "paths": paths, "content": content,
+                  "offset": offset, "size": size, "reset": reset, "hasMore": has_more})
 
     def _api_metrics_get(self) -> None:
         if self.controller is None:
@@ -1571,6 +1580,23 @@ def _port_arg(value: str) -> int:
     if not (1 <= port <= 65535):
         raise argparse.ArgumentTypeError("端口必须在 1~65535 之间")
     return port
+
+
+def _int_arg(qs: dict, name: str, default: int) -> int:
+    """查询参数取整数，非法时回落到默认值（GET 参数手抖不该 500）。"""
+    try:
+        return int((qs.get(name) or [""])[0])
+    except (TypeError, ValueError):
+        return default
+
+
+def _offset_arg(qs: dict) -> Optional[int]:
+    """日志增量读取的起始字节偏移 `since`：非整数或负数一律视为缺省（按尾部读取）。"""
+    try:
+        value = int((qs.get("since") or [""])[0])
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
 
 
 # ---------- 入口 ----------
