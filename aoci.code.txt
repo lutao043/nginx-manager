@@ -23,14 +23,6 @@ build.yml[OV6T]: F:GitHub Actions发布流水线：推送v*.*.* tag触发，仅�
 release-notes.yml[OV5T]: F:发布说明同步流水线：release-notes/*.md 变更推送到 main 时，把对应 tag 的说明同步更新到已发布的 GitHub Release 页面 | R:code:.github/workflows/build.yml | A:遍历release-notes/v*.md，以文件名为tag探测Release，存在则gh release edit --notes-file覆盖说明，不存在则跳过；支持workflow_dispatch手动触发；只改说明不动产物 | S:不会为未发布版本创建 Release，仅同步已存在的 Release：新版本的发布说明由 build.yml 发布时直接带上
 tests.yml[OQ6T]: F:GitHub Actions 测试门禁：任意分支推送与 PR 跑后端双入口测试（pytest 与零依赖 unittest）、前端语法检查与 DOM 契约断言，不触发发布 | R:code:.gitea/workflows/tests.yml,code:scripts/dom_contract.py,code:tests/helpers.py | A:tags-ignore 排除 v*.*.*；因后端零第三方依赖，同时验证不装 pytest 的标准库入口；用例自起服务子进程并由 POSIX 替身脚本回答 nginx -t | S:与 .gitea/workflows/tests.yml 手工同步；替身依赖 POSIX shell，Windows 上相关用例自动跳过
 
-===/Users/lutao/code/nginx-manager/.workbuddy/memory/===
-2026-08-04.md[SZ2S]: F:项目启动日志：敲定nginx轻量网页管理端方案——Python标准库后端、原生前端、标准版功能档位与目录结构约定 | R:- | A:- | S:-
-2026-08-05.md[SZ2T]: F:开发日志：v0.1/v0.1.1两次定位并修复exe的tkinter缺失，记录PyInstaller打包教训 | R:code:build.py | A:根因是打包用Python缺tcl/tk，collect_submodules补不了_tkinter.pyd | S:-
-2026-08-25.md[SZ2T]: F:开发日志：CSRF防护落地、proxymgr注释处理与冗余备份修复、style.css两轮重写、预览模式设计 | R:- | A:- | S:-
-2026-09-04.md[SZ2T]: F:开发日志：服务假死根因（listen backlog过小+状态检测阻塞）与修复、v0.5.1发版、PowerShell检测链熔断加固 | R:code:backend/server.py,code:backend/nginxctl.py | A:- | S:-
-2026-09-16.md[SZ3T]: F:开发日志：P0+P1功能包（代理场景模板、upstream负载均衡、stub_status实时指标、访问日志、diff体系）与工作台布局重构的取舍、验证记录与坑 | R:code:backend/proxymgr.py,code:backend/server.py,code:frontend/js/app.js | A:记录43项功能测试与mock nginx e2e验证（本机无真实nginx，真实-t校验待实机冒烟）；AOCI rc12网关Schema冲突（maintain签发候选但update_entry批量与单条两路均零写入）的复现记录；含--preview与已配置settings的交互、多实例测试需独立NGINX_MANAGER_DEFAULT_DATA_DIR等环境坑 | S:本机 python3 是 3.8：dict 合并须写 {**a}，不能用 3.9+ 的并集运算符
-2026-09-17.md[SZ3T]: F:开发日志：负载均衡独立页签与upstream搜索（v0.6.2）的实现要点、验证记录与沙箱环境坑 | R:code:frontend/js/app.js,code:frontend/index.html | A:主界面分配置文件、代理管理、负载均衡三页签，upstream面板弹性占满整屏；搜索按名称、服务器地址、引用代理150ms防抖本地过滤并显示匹配计数；校验结果条按页独立（showTestResultIn共用实现）；契约同步补页签布局与搜索过滤两条约定 | S:无GUI沙箱内 tkinter 会卡死整个服务进程（Tk 等待 NSMenu 并占住 GIL）
-
 ===/Users/lutao/code/nginx-manager/.zcode/===
 config.json[FC5T]: F:ZCode工作区级MCP配置：声明aoci stdio server，ZCode会话启动时自动连接 | R:- | A:command与args为机器绑定绝对路径（aoci二进制与本仓库根），迁移机器须改写 | S:-
 
