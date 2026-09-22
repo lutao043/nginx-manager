@@ -78,7 +78,7 @@
 | `0.8.0` | 测试基建：G1 + G2 落地并接入 CI | **功能冻结版**：本阶段不新增任何功能 | ✅ G1/G2 已落地并接入 CI；冻结期现已结束（见下） |
 | `0.9.x` | 冻结候选：G5 + G3 全键盘走查 + G6 | 只修 bug，不加功能 | ✅ G5/G6 已落地、G3 全键盘走查通过 |
 | `1.0.0-rc.1` | 发布候选版：把门禁全绿的源码交到真实环境验收 | 只做发布动作，不夹带新功能 | ✅ **已发布（2026-09-22）**：`server_version` 提为 `1.0.0-rc.1`、`release-notes/v1.0.0-rc.1.md` 已写；tag `v1.0.0-rc.1` 推 GitHub 与 Gitea；GitHub 流水线 `Build & Release` **成功**（run 35683165934），Release 资产 `nginx-manager-v1.0.0-rc.1.exe`（12,324,307 字节，HTTP 200 可下载）；main 上的 `Tests` 门禁同时**成功**（38 个提交首次过 CI） |
-| `1.0.0-rc.2` | 第二个候选版：把 rc.1 之后的改动（页面版本号 + 更新历史、暗夜对比度上界收紧）交真实环境验收 | 只做发布动作，不夹带新功能 | ✅ **已发布（2026-09-22）**：`server_version` 提为 `1.0.0-rc.2`、`release-notes/v1.0.0-rc.2.md` 已写；tag `v1.0.0-rc.2` 推 GitHub 与 Gitea；CI 与 Release 资产的实测回写见下方（同日补记） |
+| `1.0.0-rc.2` | 第二个候选版：把 rc.1 之后的改动（页面版本号 + 更新历史、暗夜对比度上界收紧）交真实环境验收 | 只做发布动作，不夹带新功能 | ✅ **已发布并核实（2026-09-22）**：`server_version` 提为 `1.0.0-rc.2`、`release-notes/v1.0.0-rc.2.md` 已写；tag `v1.0.0-rc.2` 与 main 推 GitHub 与 Gitea；GitHub 流水线 `Build & Release` **成功**（run 35693399802），Release 资产 `nginx-manager-v1.0.0-rc.2.exe`（12,342,236 字节，HTTP 200 可下载）；main 上的 `Tests` 与 `Sync Release Notes` 同时**成功**（提交 `e6be93e`） |
 | `1.0.0` | 正式版：三层目标全部达标 + rc 验收通过 | 验收通过后转正 | ⏳ 门槛已全部转绿（见第三节）；**验收载体已由 rc.1 换成 rc.2**（rc.1 说明里那句「只提升版本号、代码不动」作废，rc.1 之后的改动都并入 rc.2），转正动作见下方记录 |
 
 **关键约束：先把保障建起来，再谈正式版。** 0.8.0 必须是功能冻结版。
@@ -110,6 +110,8 @@
 2. **发布通道**：GitHub 的 22 端口仍被透明代理劫持（SSH 不可用），本次**改用 HTTPS 推送**（`https://github.com/lutao043/nginx-manager.git`，凭据走 macOS 钥匙串）；tag `v1.0.0-rc.2` 与 main 推两个远端。Gitea 该实例仍未配 runner，CI 门禁与 exe 产物只来自 GitHub Actions。
 3. **AOCI 收尾**：本批次的受管对象（`backend/server.py`、`README.md`、`README.en.md`、`API.md`、`ROADMAP.md`，以及新增的 `release-notes/v1.0.0-rc.2.md`）在提交前完成认知维护，`aoci check` 返回「✓ 可提交（Entries漂移/待策展/字典/格式/草稿五净）」、`aoci_maintain` 返回 `aligned`（`code_drift` 全空），索引条目由 50 增至 51（新增 rc.2 说明条目）。
 4. **门禁**：双入口 139 例、`contrast_audit` 192/192、`dom_contract`、`node --check` 与「版本号不落后于最新 tag」全部通过（复现命令见第六节）。
+5. **实测回写（同日补记）**：GitHub Actions `Build & Release` **成功**（run 35693399802：`build-windows` 与 `release` 两个 job 全绿），Release `nginx-manager v1.0.0-rc.2` 已创建（正文即 `release-notes/v1.0.0-rc.2.md`），资产 `nginx-manager-v1.0.0-rc.2.exe` 12,342,236 字节、`content-length` 与下载探测均为 HTTP 200；`Sync Release Notes` 与 main 上的 `Tests` 门禁在提交 `e6be93e` 上同时**成功**。
+6. **面向使用者的说明口径**：发布说明按用户视角写（只讲能感知到的变化、升级方式与需要验证的点），不放内部门禁数字与用例数；内部口径留在本文件与提交记录里。
 
 **验收通过后的转正动作**：`server_version` 由 `1.0.0-rc.2` 改为 `1.0.0` → 写 `release-notes/v1.0.0.md`（须覆盖 rc.1 之后的两批改动：页面版本号 + 更新历史、暗夜对比度上界收紧）→ 同步 README 中英功能列表 → `release: v1.0.0` 提交 → 打 tag `v1.0.0` 推两个远端。**验收范围** = rc.1 的全部项目 + rc.2 的新增项。
 
