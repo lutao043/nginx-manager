@@ -27,7 +27,7 @@
 | 无障碍语义 | `aria-label` 24、`role=` 9、`aria-expanded`（HTML 1 + JS 4）；**`aria-selected` / `aria-live` / `aria-labelledby` / `tabindex` 均为 0** | `aria-label` 35（+JS 2）、`role=` 25、`aria-labelledby` 8、`aria-selected` 6（+JS 3）、`aria-live` 2（+JS 1）、`tabindex` 6（+JS 5）、`aria-modal` 9 | ✅ 达标 |
 | 焦点样式 | `:focus-visible` 1 处、`:focus` 6 处（键盘专用焦点样式偏少） | `:focus-visible` 10 处、`:focus` 16 处（自带底色控件给醒目焦点环） | ✅ 达标 |
 | 编辑器能力 | **无行号**、无 Ctrl+Z。nginx 报错精确给出行号，编辑器却不提供行号定位 | 行号栏随行数与滚动同步；Ctrl/Cmd+Z 撤销 + Ctrl+Y 重做（自建快照历史、连续输入合并）；校验失败跳转后居中滚动并高亮该行 | ✅ 达标 |
-| 自动化测试 | **`tests/` 不存在**；CI（`build.yml`）只有 build + release，**无任何测试任务** | `tests/` 95 用例（真实子进程 HTTP 全链路、备份/回滚含最坏失败模式门禁、`nginx -t` 行号解析、DOM 契约、启动参数边界、工作区 nginx 双布局探测、备选单选落盘、单行 location 拒改写、upstream 手写指令守卫、引号内花括号与 CRLF 保持、API 契约与版本一致性）；`scripts/dom_contract.py` 静态契约检查；pytest 与标准库 `unittest` 双入口都能跑通（95 用例 / 61 subtests）；GitHub/Gitea 双宿主测试门禁（`tags-ignore: v*.*.*`，不干扰发布） | ✅ 达标 |
+| 自动化测试 | **`tests/` 不存在**；CI（`build.yml`）只有 build + release，**无任何测试任务** | `tests/` 98 用例（真实子进程 HTTP 全链路、备份/回滚含最坏失败模式门禁、`nginx -t` 行号解析、DOM 契约、启动参数边界、工作区 nginx 双布局探测、备选单选落盘、单行 location 拒改写、upstream 手写指令守卫、引号内花括号与 CRLF 保持、API 契约与版本一致性、版本派生三处断言（spec 的 exe 名、打包产物名与版本属性、exe 前端持久化目录 `frontend/v{版本}/` 及其清理））；`scripts/dom_contract.py` 静态契约检查；pytest 与标准库 `unittest` 双入口都能跑通（98 用例 / 61 subtests）；GitHub/Gitea 双宿主测试门禁（`tags-ignore: v*.*.*`，不干扰发布） | ✅ 达标 |
 | 契约与版本一致性 | 未度量 | `API.md` 与实现端点集合 34/34 双向一致；**27 个端点的成功响应顶层字段双向核对**（12 个 GET 全覆盖 + 15 个写端点，含 restore/备份删除/地址池/upstream/代理）；剩 7 个（nginx 启停重载重启、重启服务、选择路径、改设置）需真实 nginx 运行或图形界面，未纳入自动化、仅人工核对字段；版本单一来源 `server_version` 且不落后最新 tag | ✅ 达标 |
 
 **综合评估（G1–G6 落地后）**：三层目标的可验收项均已达标——界面完成度约 0.95，发布成熟度约 0.9。差距从「可验证」转到「真实环境验证」。
@@ -54,9 +54,9 @@
   - **已达成（2026-09-21）**：行号栏随行数与滚动同步；Ctrl/Cmd+Z 撤销 + Ctrl+Y 重做（自建快照历史，连续输入合并）；跳转后居中滚动并高亮该行；回滚后备忘条与高亮一并清理。**联动的前提是后端真能给出行号**：`nginx -t` 失败输出是多行（`[alert]` 前缀行 + 出错行 + `test failed` 汇总），原正则只匹配行尾，逐行解析并取最后一次命中后才真正可用（`backend/nginxctl.py::test_config`）。
 - [x] **G5 契约与版本一致性**
   - `API.md` 与实现零漂移；版本号单一来源 `backend/server.py::server_version` 与 tag、exe 文件名、前端持久化目录 `frontend/v{版本}/` 一致。
-  - **已达成（2026-09-21）**：`tests/test_api_contract.py` 双向比对端点集合（34/34）与成功响应顶层字段（差异时列出「仅文档 / 仅实现」）；版本单一来源校验＝`build.py` 提取值一致 + 白名单外不得硬编码 + 不得落后最新 tag。本轮修掉真实漂移：`GET /api/settings` 的 `dataDir / dataDirLocked / settingsFile`、`PUT /api/settings` 的 `dataDir`、`--data-dir` 与 `--port` 参数说明。**未单独断言**：exe 文件名与 `frontend/v{版本}/` 持久化目录的派生（记为待补）。
+  - **已达成（2026-09-21）**：`tests/test_api_contract.py` 双向比对端点集合（34/34）与成功响应顶层字段（差异时列出「仅文档 / 仅实现」）；版本单一来源校验＝`build.py` 提取值一致 + 白名单外不得硬编码 + 不得落后最新 tag。本轮修掉真实漂移：`GET /api/settings` 的 `dataDir / dataDirLocked / settingsFile`、`PUT /api/settings` 的 `dataDir`、`--data-dir` 与 `--port` 参数说明。**派生落地已补断言（2026-09-22）**：`VersionConsistencyTest` 新增三例，逐项把「三处派生」钉成门禁——① 打包 spec 自带版本正则必须从当前 `server.py` 提取出同一版本，且 exe 名表达式换一组假版本求值必须随之变化（挡硬编码）；② `build.py` 的产物名与 `generate_version_info()` 的 `OriginalFilename / FileVersion / ProductVersion / filevers` 必须与版本一致；③ `stage_frontend()` 的 `frontend/v{版本}/` 持久化目录由 `server_version` 派生、旧版本与 `.tmp` 残留被清理而无关目录不受影响。三例都做过变异验证（把派生改成硬编码字面量即失败）。
 - [x] **G6 无已知 P0/P1**，且 `aoci check` 无待作者化的语义维护积压。
-  - **已达成（2026-09-21）**：`SECURITY_AUDIT.md` 无未处置 P0/P1（P1 CSRF、P3 `--port` 范围校验已落地；P1「敏感操作二次确认」记为**已决策不做**，理由写在该文件）；`aoci check` 返回「✓ 可提交（五净）」、`aoci_maintain` 返回 `aligned`（当时 `aoci.code.txt` 46 条 / 源码 46 个，发布前复查一批维护后为 48 条 / 源码 48 个）。
+  - **已达成（2026-09-21）**：`SECURITY_AUDIT.md` 无未处置 P0/P1（P1 CSRF、P3 `--port` 范围校验已落地；P1「敏感操作二次确认」记为**已决策不做**，理由写在该文件）；`aoci check` 返回「✓ 可提交（五净）」、`aoci_maintain` 返回 `aligned`（维护批次口径：46 条起，两批后 48 条，第三批补 `scripts/contrast_audit.py` 后为 **49 条 / 源码 49 个**）。
 
 ## 四、明确不做（写进文档，避免反复讨论）
 
@@ -141,9 +141,9 @@ aoci 二进制：`/Users/lutao/.local/bin/aoci`（`aoci version 0.1.0-rc12`，�
 
 自检命令：`aoci --repo . doctor`、`hermes mcp test aoci`、`hermes mcp list`。
 
-### B2 认知维护状态与提交口径（2026-09-21 已闭环）
+### B2 认知维护状态与提交口径（2026-09-21 已闭环，2026-09-22 复核）
 
-认知维护积压清零：`aoci.code.txt` 48 条 / 源码 48 个（两批维护：G1/G2 测试与契约基建落地后＝新增 3 条 + 更新 9 条；发布前复查后＝新增 2 条（`LICENSE`、`scripts/e2e_real_nginx.py`）+ 更新 13 条），`aoci check` 返回「✓ 可提交（Entries漂移/待策展/字典/格式/草稿五净）」，`aoci_maintain` 返回 `aligned`（`governance_aligned: true`、`code_drift` 全空）。测试类文件（`tests/*.py`）落在**观察集**而非索引集；新增受管文件后若要继续维护，先按机器下发的 next_command 跑 `aoci scope acknowledge --repo . --reviewed-by <agent>` 完成作用域复核前移。
+认知维护积压清零：`aoci.code.txt` **49 条 / 源码 49 个**（三批维护：G1/G2 测试与契约基建落地后＝新增 3 条 + 更新 9 条；发布前复查后＝新增 2 条（`LICENSE`、`scripts/e2e_real_nginx.py`）+ 更新 13 条；补版本派生断言后＝更新 `ROADMAP.md` + `tests/test_api_contract.py`），`aoci check` 返回「✓ 可提交（Entries漂移/待策展/字典/格式/草稿五净）」，`aoci_maintain` 返回 `aligned`（`governance_aligned: true`、`code_drift` 全空）。测试类文件（`tests/*.py`）落在**观察集**而非索引集——`tests/test_api_contract.py` 的改动只前移基线、不产生新条目；新增受管文件后若要继续维护，先按机器下发的 next_command 跑 `aoci scope acknowledge --repo . --reviewed-by <agent>` 完成作用域复核前移。
 
 **提交口径（rc12 实测）**：MCP 的 `aoci_update_entry` 批量 `entries` 入口在本机被客户端 Schema 校验拦下（该字段发布的 `oneOf` 分支互斥为空，任何对象都判 `not valid under any of the given schemas`），正式写入零发生。可用传输是同一管线的 CLI：
 
