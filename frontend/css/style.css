@@ -22,10 +22,13 @@
 }
 
 /* ── 中性色阶与语义色：夜 ──
-   text-3/text-4 保证在画布与面板上都达到可读对比（≥4.5:1 用于正文级灰字，
-   4 档用于纯图标/微标签至少 3:1），避免「灰字看不清」 */
+   灰字四档一律按 WCAG AA 可读文本 4.5:1 取值（在画布与面板两种最贴近的表面上都成立），
+   不再区分「正文级 4.5 / 微标签 3.0」——11px 微标签本身也是文本，看不清等于没写。
+   --border-strong 是控件轮廓（输入框/按钮/卡片/弹窗边界），按非文本对比度 3:1 取值；
+   --border 只是分隔线，保持轻，避免整页描边变重、晃眼。
+   取色原则：只压/提到刚过线的第一档，保留各主题色相，不追求更高对比（避免刺眼）。 */
 [data-theme*="dark"]{
-  --text-1:#e9eeeb; --text-2:#a3b1aa; --text-3:#838f88; --text-4:#73817a;
+  --text-1:#e9eeeb; --text-2:#a3b1aa; --text-3:#838f88; --text-4:#76857d;
   --ok:#35d192; --ok-soft:rgba(53,209,146,.12); --ok-line:rgba(53,209,146,.30);
   --warn:#e0b23c; --warn-soft:rgba(224,178,60,.12); --warn-line:rgba(224,178,60,.30);
   --danger:#f0735f; --danger-soft:rgba(240,115,95,.12); --danger-line:rgba(240,115,95,.32);
@@ -38,11 +41,11 @@
 
 /* ── 中性色阶与语义色：日 ── */
 [data-theme*="light"]{
-  --text-1:#151a18; --text-2:#4e5a54; --text-3:#66716a; --text-4:#7b877f;
-  --ok:#0d8f62; --ok-soft:rgba(13,143,98,.10); --ok-line:rgba(13,143,98,.24);
-  --warn:#96660a; --warn-soft:rgba(150,102,10,.10); --warn-line:rgba(150,102,10,.24);
-  --danger:#c8402f; --danger-soft:rgba(200,64,47,.10); --danger-line:rgba(200,64,47,.24);
-  --info:#1f6feb; --info-soft:rgba(31,111,235,.10); --info-line:rgba(31,111,235,.24);
+  --text-1:#151a18; --text-2:#4e5a54; --text-3:#5a635d; --text-4:#68726b;
+  --ok:#0a6e4b; --ok-soft:rgba(10,110,75,.10); --ok-line:rgba(10,110,75,.24);
+  --warn:#825809; --warn-soft:rgba(130,88,9,.10); --warn-line:rgba(130,88,9,.24);
+  --danger:#ad3728; --danger-soft:rgba(173,55,40,.10); --danger-line:rgba(173,55,40,.24);
+  --info:#1a5cc3; --info-soft:rgba(26,92,195,.10); --info-line:rgba(26,92,195,.24);
   --shadow-1:0 1px 2px rgba(18,26,22,.06);
   --shadow-2:0 24px 56px -18px rgba(18,26,22,.24),0 0 0 1px rgba(18,26,22,.04);
   --scrim:rgba(24,30,27,.42);
@@ -54,10 +57,10 @@
    只有 <body> 带 data-theme，具体主题规则在 body 上覆盖本块，8 套主题不受影响。 */
 :root{
   --bg:#0a0d0c; --bg-panel:#111614; --bg-raised:#171d1a; --bg-sunken:#070908; --bg-hover:#1a211e;
-  --border:#1e2724; --border-strong:#2c3934; --border-hover:#3d4c45;
+  --border:#1e2724; --border-strong:#567066; --border-hover:#5e7a6f;
   --accent:#3ddc97; --accent-hi:#5fe8ad; --accent-fg:#04140d;
   --accent-soft:rgba(61,220,151,.12); --accent-line:rgba(61,220,151,.34); --accent-ring:rgba(61,220,151,.24);
-  --text-1:#e9eeeb; --text-2:#a3b1aa; --text-3:#838f88; --text-4:#73817a;
+  --text-1:#e9eeeb; --text-2:#a3b1aa; --text-3:#838f88; --text-4:#76857d;
   --ok:#35d192; --ok-soft:rgba(53,209,146,.12); --ok-line:rgba(53,209,146,.30);
   --warn:#e0b23c; --warn-soft:rgba(224,178,60,.12); --warn-line:rgba(224,178,60,.30);
   --danger:#f0735f; --danger-soft:rgba(240,115,95,.12); --danger-line:rgba(240,115,95,.32);
@@ -73,56 +76,56 @@
 /* 翡翠 · 夜 */
 [data-theme="emerald-dark"]{
   --bg:#0a0d0c; --bg-panel:#111614; --bg-raised:#171d1a; --bg-sunken:#070908; --bg-hover:#1a211e;
-  --border:#1e2724; --border-strong:#2c3934; --border-hover:#3d4c45;
+  --border:#1e2724; --border-strong:#567066; --border-hover:#5e7a6f;
   --accent:#3ddc97; --accent-hi:#5fe8ad; --accent-fg:#04140d;
   --accent-soft:rgba(61,220,151,.12); --accent-line:rgba(61,220,151,.34); --accent-ring:rgba(61,220,151,.24);
 }
 /* 海洋 · 夜 */
 [data-theme="ocean-dark"]{
   --bg:#0a0d11; --bg-panel:#10141b; --bg-raised:#161b24; --bg-sunken:#070a0d; --bg-hover:#171d27;
-  --border:#1d232e; --border-strong:#2b3442; --border-hover:#3a4657;
+  --border:#1d232e; --border-strong:#586b87; --border-hover:#607593;
   --accent:#4d9ef5; --accent-hi:#74b5fa; --accent-fg:#04101f;
   --accent-soft:rgba(77,158,245,.12); --accent-line:rgba(77,158,245,.34); --accent-ring:rgba(77,158,245,.24);
 }
 /* 琥珀 · 夜 */
 [data-theme="amber-dark"]{
   --bg:#0e0c09; --bg-panel:#15120d; --bg-raised:#1c1812; --bg-sunken:#0a0806; --bg-hover:#1e1a13;
-  --border:#262018; --border-strong:#3a3123; --border-hover:#4d422f;
+  --border:#262018; --border-strong:#786548; --border-hover:#836f4f;
   --accent:#f0a53c; --accent-hi:#f7bd63; --accent-fg:#1a1002;
   --accent-soft:rgba(240,165,60,.12); --accent-line:rgba(240,165,60,.34); --accent-ring:rgba(240,165,60,.24);
 }
 /* 玫瑰 · 夜 */
 [data-theme="rose-dark"]{
   --bg:#0f0a0c; --bg-panel:#170f12; --bg-raised:#1e1418; --bg-sunken:#0b0708; --bg-hover:#201519;
-  --border:#271b20; --border-strong:#3c2a30; --border-hover:#513a42;
+  --border:#271b20; --border-strong:#835c69; --border-hover:#8f6573;
   --accent:#f4728c; --accent-hi:#f9909f; --accent-fg:#1c060b;
   --accent-soft:rgba(244,114,140,.12); --accent-line:rgba(244,114,140,.34); --accent-ring:rgba(244,114,140,.24);
 }
 /* 翡翠 · 日 */
 [data-theme="emerald-light"]{
   --bg:#f6f8f7; --bg-panel:#ffffff; --bg-raised:#fbfcfc; --bg-sunken:#eef2f0; --bg-hover:#f0f5f3;
-  --border:#e3e8e5; --border-strong:#cfd7d2; --border-hover:#b6c1ba;
+  --border:#e3e8e5; --border-strong:#838985; --border-hover:#797e7b;
   --accent:#0a7f58; --accent-hi:#086b4a; --accent-fg:#ffffff;
   --accent-soft:rgba(11,143,99,.09); --accent-line:rgba(11,143,99,.28); --accent-ring:rgba(11,143,99,.18);
 }
 /* 海洋 · 日 */
 [data-theme="ocean-light"]{
   --bg:#f5f7fa; --bg-panel:#ffffff; --bg-raised:#fafbfd; --bg-sunken:#ebeff5; --bg-hover:#eff3f9;
-  --border:#e0e6ef; --border-strong:#c9d3e1; --border-hover:#aebbd0;
+  --border:#e0e6ef; --border-strong:#80868f; --border-hover:#767b84;
   --accent:#1f6feb; --accent-hi:#1a61d4; --accent-fg:#ffffff;
   --accent-soft:rgba(31,111,235,.09); --accent-line:rgba(31,111,235,.28); --accent-ring:rgba(31,111,235,.18);
 }
 /* 琥珀 · 日 */
 [data-theme="amber-light"]{
   --bg:#faf8f4; --bg-panel:#ffffff; --bg-raised:#fdfcf9; --bg-sunken:#f3f0e8; --bg-hover:#f7f3e9;
-  --border:#e8e3d7; --border-strong:#d4cbb8; --border-hover:#bdb29b;
+  --border:#e8e3d7; --border-strong:#8c867a; --border-hover:#817b70;
   --accent:#a9660a; --accent-hi:#925707; --accent-fg:#ffffff;
   --accent-soft:rgba(169,102,10,.09); --accent-line:rgba(169,102,10,.28); --accent-ring:rgba(169,102,10,.18);
 }
 /* 玫瑰 · 日 */
 [data-theme="rose-light"]{
   --bg:#faf6f7; --bg-panel:#ffffff; --bg-raised:#fdfbfb; --bg-sunken:#f3ecee; --bg-hover:#f8eef0;
-  --border:#e9dee2; --border-strong:#d7c5ca; --border-hover:#bfa8ae;
+  --border:#e9dee2; --border-strong:#8e8285; --border-hover:#83787b;
   --accent:#c21640; --accent-hi:#a81237; --accent-fg:#ffffff;
   --accent-soft:rgba(194,22,64,.09); --accent-line:rgba(194,22,64,.28); --accent-ring:rgba(194,22,64,.18);
 }
