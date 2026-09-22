@@ -111,6 +111,9 @@ const App = (() => {
     $("#btnSettings").addEventListener("click", openSettings);
     $("#btnSaveSettings").addEventListener("click", saveSettings);
     bindModalClose("#settingsModal");
+    // 更新历史（入口：顶栏版本号）
+    $("#btnVersion").addEventListener("click", openChangelog);
+    bindModalClose("#changelogModal");
     // 树刷新
     $("#btnRefreshTree").addEventListener("click", loadTree);
     // 状态操作
@@ -493,6 +496,9 @@ const App = (() => {
         $("#stRunning").textContent = text;
       }
       $("#stVersion").textContent = st.version || "—";
+      // 顶栏版本号：manager 自身版本（与上面 nginx 的「版本」是两件事）
+      const verBtn = $("#btnVersion");
+      if (verBtn && st.managerVersion) verBtn.textContent = "v" + st.managerVersion;
       $("#stPid").textContent = st.pid || "—";
       const confEl = $("#stConf");
       confEl.textContent = st.confPath || (preview ? "（预览模式）" : "—");
@@ -515,6 +521,61 @@ const App = (() => {
     } catch (e) {
       // 服务不可达时静默，保底显示
     }
+  }
+
+  /* ---------- 更新历史（顶栏版本号 → 发布说明） ---------- */
+  let changelogData = null;   // 首次打开时拉取；版本历史是静态数据，缓存到本次会话结束
+
+  async function openChangelog() {
+    openModal("#changelogModal");
+    if (changelogData) { renderChangelog(changelogData); return; }
+    const box = $("#changelogList");
+    box.innerHTML = '<p class="muted">加载中…</p>';
+    try {
+      changelogData = await api.changelog();
+    } catch (e) {
+      box.innerHTML = '<p class="muted">读取失败：' + escapeHtml(e.message) + "</p>";
+      return;
+    }
+    renderChangelog(changelogData);
+  }
+
+  function renderChangelog(data) {
+    const box = $("#changelogList");
+    const cur = (data && data.version) || "";
+    const releases = (data && data.releases) || [];
+    $("#changelogCurrent").textContent = cur ? "v" + cur : "—";
+    if (!releases.length) {
+      box.innerHTML = '<p class="muted">未找到发布说明（release-notes/），当前环境无法展示更新历史；不影响其他功能。</p>';
+      return;
+    }
+    const hasCur = releases.some(r => r.version === cur);
+    box.innerHTML = releases.map((r, i) => {
+      const isCur = !!cur && r.version === cur;
+      // 默认展开当前版本；版本号还没写发布说明时（开发中）展开最新一版
+      const open = isCur || (!hasCur && i === 0);
+      const head = "v" + escapeHtml(r.version)
+        + (isCur ? '<span class="release-cur">当前版本</span>' : "")
+        + (r.title ? '<span class="release-title">' + escapeHtml(r.title) + "</span>" : "");
+      const body = (r.sections || []).map(s =>
+        '<div class="release-section">'
+        + (s.title ? '<p class="release-section-title">' + escapeHtml(s.title) + "</p>" : "")
+        + '<ul class="release-items">'
+        + (s.items || []).map(t => "<li>" + inlineMarkup(t) + "</li>").join("")
+        + "</ul></div>").join("");
+      const link = r.link
+        ? '<p class="release-link">完整变更对比：<span class="mono">' + escapeHtml(r.link) + "</span></p>" : "";
+      return '<details class="release"' + (open ? " open" : "") + '><summary class="release-head">' + head
+        + '</summary><div class="release-body">' + body + link + "</div></details>";
+    }).join("");
+  }
+
+  /* 发布说明的行内标记：先转义再套白名单（**粗体** 与 `代码`）。
+     文本来自仓库自身，但一律不得当 HTML 执行。 */
+  function inlineMarkup(text) {
+    return escapeHtml(text)
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/`([^`]+)`/g, "<code>$1</code>");
   }
 
   /* ---------- 实时指标（stub_status） ---------- */
