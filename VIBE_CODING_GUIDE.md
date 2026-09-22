@@ -24,6 +24,7 @@
 │   └── nginxctl.py      # nginx 控制（三端适配层）
 ├── tests/               # 测试源码（标准库 unittest，真实服务子进程 + 真实 HTTP）
 ├── scripts/             # 门禁脚本（dom_contract.py 等）
+├── release-notes/       # 逐版发布说明（界面「更新历史」与 GET /api/changelog 的数据源，随 exe 一起打包）
 ├── data/                # 运行时数据（gitignore；实际在用户数据目录）
 ├── API.md               # 契约唯一权威源 ★
 ├── SECURITY_AUDIT.md
