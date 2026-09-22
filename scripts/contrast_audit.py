@@ -6,22 +6,27 @@
 渲染复核过，也没有可复现的度量命令。本脚本把「哪些令牌对、按什么标准核对」固化成可提交
 的断言；纯标准库，一条命令任何人可复现。
 
-判定分两档，避免把「项目自己声明的标准」和「WCAG AA 严格标准」混为一谈：
+判定标准：**WCAG 2.1 AA**（可读文本 ≥4.5、非文本控件边界 ≥3.0），不达标退出码 1。
+2026-09-22 之前本脚本分「项目声明档 / 严格档」两档，声明档把 11px 微标签与语义色作正文
+只按 3.0 要求；现已把 AA 作为唯一门禁，两档阈值统一，`--strict` 保留为兼容别名。
 
-* 默认（声明档）：按 style.css / ROADMAP 已经声明的目标核对——正文级灰字 ≥4.5、
-  四级灰字（纯图标与微标签）与语义色作正文 ≥3.0。这一档是门禁，不达标退出码 1。
-* `--strict`：按 WCAG 2.1 AA 严格核对（可读文本一律 ≥4.5、非文本 UI 边界 ≥3.0）。
-  严格档仍有差距的项会逐条列出，但默认档不因此失败——改色属设计变更，需人工决策。
+配色对按「同一条 CSS 规则里真的写在一起」的邻接来定，不靠想当然：
+* `--text-*` 出现在画布（透明/继承）与面板/内嵌面上 → 四个灰字档对画布与面板都核对；
+* `--border-strong` 只用在 `--bg-raised`（输入框/按钮/徽章）、`--bg-sunken`（编辑器/日志/
+  diff）、`--bg-panel`（弹窗/卡片）与无背景（画布）上 → 四个表面逐个核对（最严的是
+  `--bg-sunken`：浅色主题里它最暗，深色主题里最严的是 `--bg-raised`）；
+* 语义色（ok/warn/danger/info）作正文时主要落在自己的 `-soft` 芯片上，芯片要按「叠在面板」
+  与「叠在内嵌面」两种底座分别核对——芯片比纯白面板更严，只核对面板会漏判。
 
 与真实浏览器渲染的关系：本脚本只做 CSS 声明的小型级联解析（<html> 上的 :root 兜底 →
 <body> 上命中的 [data-theme…] 覆盖），已用真实浏览器 getComputedStyle 取色逐项核对一致
-（2026-09-21：8 主题 × 11 对 = 88 项全部对齐），故可作为回归门禁。
+（2026-09-21 首次 88 项；2026-09-22 调色后重核），故可作为回归门禁。
 
 用法：
-    python3 scripts/contrast_audit.py            # 声明档，表格输出
-    python3 scripts/contrast_audit.py --strict   # 按 WCAG AA 严格核对
-    python3 scripts/contrast_audit.py --json     # 机器可读
+    python3 scripts/contrast_audit.py            # 表格输出；不达标退出码 1
     python3 scripts/contrast_audit.py --quiet    # 只打印不达标项与汇总
+    python3 scripts/contrast_audit.py --json     # 机器可读
+    python3 scripts/contrast_audit.py --strict   # 兼容别名（与默认档同一标准）
     python3 scripts/contrast_audit.py --css <路径>
 """
 import argparse
@@ -37,26 +42,39 @@ THEMES = [
     "emerald-light", "ocean-light", "amber-light", "rose-light",
 ]
 
-# (前景, 背景, 声明档阈值, 严格档阈值, 说明)；声明档阈值为 None 表示项目未声明、仅严格档核对
+# (前景, 背景, 背景叠加底座或 None, 阈值, 说明)
 PAIRS = [
-    ("text-1", "bg", 4.5, 4.5, "正文主色 / 画布"),
-    ("text-2", "bg-panel", 4.5, 4.5, "次级正文 / 面板"),
-    ("text-3", "bg", 4.5, 4.5, "三级灰字 / 画布"),
-    ("text-3", "bg-panel", 4.5, 4.5, "三级灰字 / 面板"),
-    ("text-4", "bg", 3.0, 4.5, "四级灰字（图标/微标签）/ 画布"),
-    ("text-4", "bg-panel", 3.0, 4.5, "四级灰字（图标/微标签）/ 面板"),
-    ("accent-fg", "accent", 4.5, 4.5, "主按钮文字 / 主色底"),
-    ("ok", "bg-panel", 3.0, 4.5, "成功色作正文 / 面板"),
-    ("warn", "bg-panel", 3.0, 4.5, "警告色作正文 / 面板"),
-    ("danger", "bg-panel", 3.0, 4.5, "危险色作正文 / 面板"),
-    ("info", "bg-panel", 3.0, 4.5, "信息色作正文 / 面板"),
-    ("border-strong", "bg", None, 3.0, "控件描边 / 画布（非文本边界）"),
+    ("text-1", "bg", None, 4.5, "正文主色 / 画布"),
+    ("text-2", "bg-panel", None, 4.5, "次级正文 / 面板"),
+    ("text-3", "bg", None, 4.5, "三级灰字 / 画布"),
+    ("text-3", "bg-panel", None, 4.5, "三级灰字 / 面板"),
+    ("text-4", "bg", None, 4.5, "四级灰字（微标签）/ 画布"),
+    ("text-4", "bg-panel", None, 4.5, "四级灰字（微标签）/ 面板"),
+    ("accent-fg", "accent", None, 4.5, "主按钮文字 / 主色底"),
+    ("accent-fg", "accent-hi", None, 4.5, "主按钮文字 / 主色悬停底"),
+    ("border-strong", "bg", None, 3.0, "控件轮廓 / 画布（非文本边界）"),
+    ("border-strong", "bg-panel", None, 3.0, "控件轮廓 / 面板（非文本边界）"),
+    ("border-strong", "bg-raised", None, 3.0, "控件轮廓 / 抬升面（非文本边界）"),
+    ("border-strong", "bg-sunken", None, 3.0, "控件轮廓 / 内嵌面（非文本边界）"),
+    ("ok", "bg-panel", None, 4.5, "成功色作正文 / 面板"),
+    ("ok", "ok-soft", "bg-panel", 4.5, "成功色作正文 / 芯片（叠面板）"),
+    ("ok", "ok-soft", "bg-sunken", 4.5, "成功色作正文 / 芯片（叠内嵌面）"),
+    ("warn", "bg-panel", None, 4.5, "警告色作正文 / 面板"),
+    ("warn", "warn-soft", "bg-panel", 4.5, "警告色作正文 / 芯片（叠面板）"),
+    ("warn", "warn-soft", "bg-sunken", 4.5, "警告色作正文 / 芯片（叠内嵌面）"),
+    ("danger", "bg-panel", None, 4.5, "危险色作正文 / 面板"),
+    ("danger", "danger-soft", "bg-panel", 4.5, "危险色作正文 / 芯片（叠面板）"),
+    ("danger", "danger-soft", "bg-sunken", 4.5, "危险色作正文 / 芯片（叠内嵌面）"),
+    ("info", "bg-panel", None, 4.5, "信息色作正文 / 面板"),
+    ("info", "info-soft", "bg-panel", 4.5, "信息色作正文 / 芯片（叠面板）"),
+    ("info", "info-soft", "bg-sunken", 4.5, "信息色作正文 / 芯片（叠内嵌面）"),
 ]
 
 
 # ── 颜色与对比度 ───────────────────────────────────────────────
 
 HEX_RE = re.compile(r"^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+RGBA_RE = re.compile(r"^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$")
 
 
 def parse_hex(value):
@@ -67,6 +85,21 @@ def parse_hex(value):
     if len(body) == 3:
         body = "".join(ch * 2 for ch in body)
     return tuple(int(body[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def parse_rgba(value):
+    m = RGBA_RE.match((value or "").strip())
+    if not m:
+        return None
+    r, g, b = (int(round(float(m.group(i)))) for i in (1, 2, 3))
+    alpha = float(m.group(4)) if m.group(4) is not None else 1.0
+    return (r, g, b, alpha)
+
+
+def composite(rgba, base):
+    """把 rgba 叠到不透明底色上，返回实际呈现的 RGB。"""
+    r, g, b, a = rgba
+    return tuple(round(c * a + d * (1 - a)) for c, d in zip((r, g, b), base))
 
 
 def relative_luminance(rgb):
@@ -123,8 +156,8 @@ def is_body_level(selector, theme):
 def theme_tokens(rules, theme):
     """级联：先用 <html> 上的 :root 兜底，再用 <body> 上命中的 [data-theme…] 按文件顺序覆盖。
 
-    注意顺序陷阱（本文件真实存在）：第 55 行的兜底 :root 块写在「日」色阶之后，但它是
-    <html> 级，浏览器里会被 <body> 自身的 data-theme 规则压住——不能按文件顺序直接盖。
+    注意顺序陷阱（本文件真实存在）：兜底 :root 块写在「日」色阶之后，但它是 <html> 级，
+    浏览器里会被 <body> 自身的 data-theme 规则压住——不能按文件顺序直接盖。
     """
     tokens = {}
     for selector, decls in rules:
@@ -136,38 +169,53 @@ def theme_tokens(rules, theme):
     return tokens
 
 
+def resolve_background(tokens, bg_name, over_name):
+    """解析背景：纯 hex 直接给出；`rgba(…)` 按 over 底座合成（芯片类背景）。"""
+    raw = tokens.get("--" + bg_name)
+    rgb = parse_hex(raw)
+    if rgb is not None:
+        return rgb, (raw or "").strip()
+    rgba = parse_rgba(raw)
+    if rgba is None:
+        return None, str(raw)
+    base = parse_hex(tokens.get("--" + (over_name or "")))
+    if base is None:
+        return None, "%s（缺少可合成的底座）" % raw
+    return composite(rgba, base), "%s 叠 %s" % (raw.strip(), tokens.get("--" + over_name))
+
+
 def audit(css_path):
     with open(css_path, "r", encoding="utf-8") as handle:
         rules = read_rules(handle.read())
     rows = []
     for theme in THEMES:
         tokens = theme_tokens(rules, theme)
-        for fg_name, bg_name, declared, strict, label in PAIRS:
+        for fg_name, bg_name, over, minimum, label in PAIRS:
             fg_raw = tokens.get("--" + fg_name)
-            bg_raw = tokens.get("--" + bg_name)
-            fg, bg = parse_hex(fg_raw), parse_hex(bg_raw)
+            fg = parse_hex(fg_raw)
+            bg, bg_detail = resolve_background(tokens, bg_name, over)
             row = {
-                "theme": theme, "pair": "%s/%s" % (fg_name, bg_name), "label": label,
-                "declared": declared, "strict": strict, "ratio": None,
-                "pass_declared": None, "pass_strict": None,
+                "theme": theme,
+                "pair": "%s/%s" % (fg_name, bg_name) if not over else "%s/%s@%s" % (fg_name, bg_name, over),
+                "label": label, "min": minimum, "ratio": None, "pass": None, "detail": "",
             }
             if fg is None or bg is None:
-                row["detail"] = "无法解析色值（%s / %s）" % (fg_raw, bg_raw)
+                row["detail"] = "无法解析色值（%s / %s）" % (fg_raw, bg_detail)
                 rows.append(row)
                 continue
             ratio = contrast_ratio(fg, bg)
             row["ratio"] = round(ratio, 2)
-            row["pass_declared"] = None if declared is None else ratio >= declared
-            row["pass_strict"] = ratio >= strict
-            row["detail"] = "%s 对 %s" % ((fg_raw or "").strip(), (bg_raw or "").strip())
+            row["pass"] = ratio >= minimum
+            row["detail"] = "%s 对 %s" % ((fg_raw or "").strip().lower(), bg_detail.lower())
             rows.append(row)
     return rows
 
 
 def main():
-    parser = argparse.ArgumentParser(description="对比度审计（nginx 管理端 8 套主题）")
+    parser = argparse.ArgumentParser(description="对比度审计（nginx 管理端 8 套主题，WCAG AA）")
     parser.add_argument("--css", default=DEFAULT_CSS, help="style.css 路径（默认 frontend/css/style.css）")
-    parser.add_argument("--strict", action="store_true", help="按 WCAG 2.1 AA 严格核对")
+    parser.add_argument("--strict", action="store_true",
+                        help="兼容别名：2026-09-22 起默认档即 WCAG AA 严格档")
     parser.add_argument("--json", action="store_true", help="输出 JSON")
     parser.add_argument("--quiet", action="store_true", help="只打印不达标项与汇总")
     args = parser.parse_args()
@@ -178,18 +226,12 @@ def main():
 
     rows = audit(args.css)
     unresolved = [r for r in rows if r["ratio"] is None]
-    if args.strict:
-        failures = [r for r in rows if r["pass_strict"] is False]
-        notices = []
-    else:
-        failures = [r for r in rows if r["pass_declared"] is False]
-        notices = [r for r in rows if r["pass_declared"] is not False and r["pass_strict"] is False]
+    failures = [r for r in rows if r["pass"] is False]
 
     if args.json:
         print(json.dumps({
-            "css": args.css, "mode": "strict" if args.strict else "declared",
-            "themes": THEMES, "total": len(rows),
-            "failures": failures, "strict_gaps": notices, "unresolved": unresolved,
+            "css": args.css, "mode": "wcag-aa", "themes": THEMES, "total": len(rows),
+            "failures": failures, "unresolved": unresolved,
             "min_ratio": min([r["ratio"] for r in rows if r["ratio"] is not None] or [0]),
         }, ensure_ascii=False, indent=1))
         return 1 if (failures or unresolved) else 0
@@ -201,27 +243,15 @@ def main():
                 current = row["theme"]
                 print("\n── %s ──" % current)
             if row["ratio"] is None:
-                print("  ?  %-22s %s" % (row["pair"], row["detail"]))
+                print("  ?  %-24s %s" % (row["pair"], row["detail"]))
                 continue
-            need = row["strict"] if args.strict else row["declared"]
-            flag = "✓" if (row["pass_strict"] if args.strict else row["pass_declared"]) else "×"
-            if need is None:
-                print("  ·  %-22s %5.2f (项目未声明；严格档需 ≥%.1f)  %s" %
-                      (row["pair"], row["ratio"], row["strict"], row["label"]))
-            else:
-                print("  %s %-22s %5.2f (需 ≥%.1f)  %s" % (flag, row["pair"], row["ratio"], need, row["label"]))
+            flag = "✓" if row["pass"] else "×"
+            print("  %s %-24s %5.2f (需 ≥%.1f)  %s" % (flag, row["pair"], row["ratio"], row["min"], row["label"]))
 
-    mode = "WCAG AA 严格档" if args.strict else "项目声明档"
-    print("\n[%s] 共 %d 项：通过 %d，未达标 %d，无法解析 %d" %
-          (mode, len(rows), len(rows) - len(failures) - len(unresolved), len(failures), len(unresolved)))
+    print("\n[WCAG AA] 共 %d 项：通过 %d，未达标 %d，无法解析 %d" %
+          (len(rows), len(rows) - len(failures) - len(unresolved), len(failures), len(unresolved)))
     for row in failures:
-        print("  × %s %s = %.2f < %.1f  %s" %
-              (row["theme"], row["pair"], row["ratio"],
-               row["strict"] if args.strict else row["declared"], row["detail"]))
-    if notices:
-        print("\n严格档（WCAG AA）仍有差距、声明档不视为失败（改色属设计变更，需人工决策）：")
-        for row in notices:
-            print("  ! %s %s = %.2f < %.1f  %s" % (row["theme"], row["pair"], row["ratio"], row["strict"], row["detail"]))
+        print("  × %s %s = %.2f < %.1f  %s" % (row["theme"], row["pair"], row["ratio"], row["min"], row["detail"]))
     for row in unresolved:
         print("  ? %s %s %s" % (row["theme"], row["pair"], row["detail"]))
     return 1 if (failures or unresolved) else 0
