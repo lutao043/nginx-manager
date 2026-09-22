@@ -20,7 +20,7 @@ ROOT = os.path.abspath(SPECPATH)
 _server_py = os.path.join(ROOT, "backend", "server.py")
 APP_VERSION = "0.0.0"  # fallback，正常不会用到
 with open(_server_py, encoding="utf-8") as _f:
-    _m = _re.search(r'server_version\s*=\s*["\']nginx-manager/([\d.]+)["\']', _f.read())
+    _m = _re.search(r'server_version\s*=\s*["\']nginx-manager/([\d.]+(?:-[0-9A-Za-z.]+)?)["\']', _f.read())
     if _m:
         APP_VERSION = _m.group(1)
 

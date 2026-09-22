@@ -253,10 +253,27 @@ PROBE_TARGET2 = "http://127.0.0.1:9010"
 PROBE_TARGET3 = "http://127.0.0.1:9011"
 
 
+def version_sort_key(tag: str) -> tuple:
+    """版本排序键：同号下正式版 > 预发布版；预发布之间按后缀逐段比较。
+
+    不能用 `tuple(int(x) for x in tag.split("."))`：预发布 tag 里会出现 "0-rc"
+    这种非整数段，直接抛 ValueError，会把整个版本门禁带崩。
+    """
+    core = tag.lstrip("v")
+    pre = ""
+    if "-" in core:
+        core, pre = core.split("-", 1)
+    nums = tuple(int(x) for x in core.split("."))
+    if not pre:
+        return (nums, 1, ())
+    ordinal = tuple(int(x) if x.isdigit() else 0 for x in re.split(r"[._-]", pre))
+    return (nums, 0, ordinal)
+
+
 class VersionConsistencyTest(unittest.TestCase):
     def setUp(self):
         src = server_source()
-        m = re.search(r'server_version\s*=\s*"nginx-manager/([\d.]+)"', src)
+        m = re.search(r'server_version\s*=\s*"nginx-manager/([\d.]+(?:-[0-9A-Za-z.]+)?)"', src)
         self.assertIsNotNone(m, "backend/server.py 缺少 server_version 单一来源")
         self.version = m.group(1)
 
@@ -294,7 +311,7 @@ class VersionConsistencyTest(unittest.TestCase):
         for field in ("FileVersion", "ProductVersion"):
             self.assertIn("u'%s', u'%s'" % (field, self.version), text,
                           "%s 未与 server_version 一致" % field)
-        parts = (self.version.split(".") + ["0", "0", "0"])[:4]
+        parts = (self.version.split("-", 1)[0].split(".") + ["0", "0", "0"])[:4]
         self.assertIn("filevers=(%s)" % ", ".join(parts), text, "文件版本段与版本号不一致")
 
     def test_spec_derives_version_and_exe_name(self):
@@ -397,11 +414,37 @@ class VersionConsistencyTest(unittest.TestCase):
                               capture_output=True, text=True).stdout.split()
         if not tags:
             self.skipTest("仓库没有 tag（CI 浅克隆时正常）")
-        latest = max(tags, key=lambda t: tuple(int(x) for x in t.lstrip("v").split(".")))
-        cur = tuple(int(x) for x in self.version.split("."))
-        newest = tuple(int(x) for x in latest.lstrip("v").split("."))
-        self.assertGreaterEqual(cur, newest,
+        latest = max(tags, key=version_sort_key)
+        self.assertGreaterEqual(version_sort_key("v" + self.version), version_sort_key(latest),
                                 "server_version %s 落后于最新 tag %s" % (self.version, latest))
+
+    def test_prerelease_version_supported(self):
+        """预发布号（-rc.N）必须走通提取、打包命名、资源版本与 tag 排序。
+
+        用合成版本号，不写真实预发布字面量——本文件不在版本号硬编码白名单里。
+        """
+        fake = "9.9.9-rc.1"
+        spec = importlib.util.spec_from_file_location("build_mod", BUILD_PY)
+        build = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(build)
+
+        tmp = tempfile.mkdtemp(prefix="nm-build-info-pre-")
+        orig_root = build.ROOT
+        try:
+            build.ROOT = tmp
+            text = read(build.generate_version_info(fake))
+        finally:
+            build.ROOT = orig_root
+            shutil.rmtree(tmp, ignore_errors=True)
+        self.assertIn("u'FileVersion', u'%s'" % fake, text, "预发布后缀未写进文本版本属性")
+        self.assertIn("u'OriginalFilename', u'%s-v%s.exe'" % (APP_NAME, fake), text,
+                      "预发布产物名不正确")
+        self.assertIn("filevers=(9, 9, 9, 0)", text, "预发布后缀不该进入资源版本数字段")
+
+        # tag 排序：rc 小于同号正式版，rc.2 大于 rc.1，且都不越级
+        self.assertLess(version_sort_key("v9.9.9-rc.1"), version_sort_key("v9.9.9"))
+        self.assertLess(version_sort_key("v9.9.9-rc.1"), version_sort_key("v9.9.9-rc.2"))
+        self.assertLess(version_sort_key("v9.9.9-rc.2"), version_sort_key("v9.9.10"))
 
 
 if __name__ == "__main__":

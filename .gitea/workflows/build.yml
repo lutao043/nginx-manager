@@ -26,7 +26,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nginx-manager-macos
-          path: dist/nginx-manager
+          path: dist/nginx-manager-v*  # 不带扩展名（macOS/Linux）
 
   build-windows:
     runs-on: windows-latest
@@ -41,7 +41,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nginx-manager-windows
-          path: dist/nginx-manager.exe
+          path: dist/nginx-manager-v*.exe
 
   release:
     needs: [build-macos, build-windows]
@@ -71,6 +71,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            nginx-manager-macos/nginx-manager
-            nginx-manager-windows/nginx-manager.exe
+            nginx-manager-macos/nginx-manager-v*
+            nginx-manager-windows/nginx-manager-v*.exe
           body_path: RELEASE_NOTES.md
