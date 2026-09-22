@@ -245,10 +245,10 @@ function bindModalClose(id, onClose) {
 
   const GROUPS = [
     { label: "夜间模式", items: [
-      { id: "emerald-dark",  name: "翡翠 · 夜", color: "#3ddc97" },
-      { id: "ocean-dark",    name: "海洋 · 夜", color: "#4d9ef5" },
-      { id: "amber-dark",    name: "琥珀 · 夜", color: "#f0a53c" },
-      { id: "rose-dark",     name: "玫瑰 · 夜", color: "#f4728c" },
+      { id: "emerald-dark",  name: "翡翠 · 夜", color: "#2bc280" },
+      { id: "ocean-dark",    name: "海洋 · 夜", color: "#4597ef" },
+      { id: "amber-dark",    name: "琥珀 · 夜", color: "#e59320" },
+      { id: "rose-dark",     name: "玫瑰 · 夜", color: "#ec6983" },
     ] },
     { label: "日间模式", items: [
       { id: "emerald-light", name: "翡翠 · 日", color: "#0a7f58" },
