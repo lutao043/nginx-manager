@@ -26,22 +26,29 @@
    不再区分「正文级 4.5 / 微标签 3.0」——11px 微标签本身也是文本，看不清等于没写。
    --border-strong 是控件轮廓（输入框/按钮/卡片/弹窗边界），按非文本对比度 3:1 取值；
    --border 只是分隔线，保持轻，避免整页描边变重、晃眼。
-   取色原则：只压/提到刚过线的第一档，保留各主题色相，不追求更高对比（避免刺眼）。 */
+   取色原则：只压/提到刚过线的第一档，保留各主题色相，不追求更高对比（避免刺眼）。
+   2026-09-22 二次收紧：达标只是下限，上界同样要守，否则「全过 AA」会变成满屏刺眼——
+   正文主色由 16.6:1 压到约 12:1、次级正文由 8.2:1 到约 6.8:1、语义色由 9.3:1 到约 7:1，
+   各主题强调色同时降饱和约 8% 去霓虹感；灰字三/四档与控件轮廓不动（本就贴 AA 下限）。
+   改完必须跑 scripts/contrast_audit.py 复核。 */
 [data-theme*="dark"]{
-  --text-1:#e9eeeb; --text-2:#a3b1aa; --text-3:#838f88; --text-4:#76857d;
-  --ok:#35d192; --ok-soft:rgba(53,209,146,.12); --ok-line:rgba(53,209,146,.30);
-  --warn:#e0b23c; --warn-soft:rgba(224,178,60,.12); --warn-line:rgba(224,178,60,.30);
-  --danger:#f0735f; --danger-soft:rgba(240,115,95,.12); --danger-line:rgba(240,115,95,.32);
-  --info:#5aa9f0; --info-soft:rgba(90,169,240,.12); --info-line:rgba(90,169,240,.30);
+  --text-1:#c0cfc6; --text-2:#91a299; --text-3:#838f88; --text-4:#76857d;
+  --ok:#29b67d; --ok-soft:rgba(41,182,125,.12); --ok-line:rgba(41,182,125,.30);
+  --warn:#c99920; --warn-soft:rgba(201,153,32,.12); --warn-line:rgba(201,153,32,.30);
+  --danger:#ee614a; --danger-soft:rgba(238,97,74,.12); --danger-line:rgba(238,97,74,.32);
+  --info:#3f9bee; --info-soft:rgba(63,155,238,.12); --info-line:rgba(63,155,238,.30);
   --shadow-1:0 1px 2px rgba(0,0,0,.5);
   --shadow-2:0 24px 56px -16px rgba(0,0,0,.8),0 0 0 1px rgba(255,255,255,.03);
   --scrim:rgba(4,7,6,.62);
   --scheme:dark;
 }
 
-/* ── 中性色阶与语义色：日 ── */
+/* ── 中性色阶与语义色：日 ──
+   浅色下同样不让正文主色顶到 16.5:1 的纸白刺眼档：压到约 14:1，仍是清晰的黑（AA 下限 4.5:1）。
+   语义色在浅色下已贴「自身 -soft 芯片叠内嵌面」的 4.5 底线（ok/ok-soft@bg-sunken 仅 4.68），
+   不再下调——浅色语义色保持原值。 */
 [data-theme*="light"]{
-  --text-1:#151a18; --text-2:#4e5a54; --text-3:#5a635d; --text-4:#68726b;
+  --text-1:#212825; --text-2:#515d57; --text-3:#5a635d; --text-4:#68726b;
   --ok:#0a6e4b; --ok-soft:rgba(10,110,75,.10); --ok-line:rgba(10,110,75,.24);
   --warn:#825809; --warn-soft:rgba(130,88,9,.10); --warn-line:rgba(130,88,9,.24);
   --danger:#ad3728; --danger-soft:rgba(173,55,40,.10); --danger-line:rgba(173,55,40,.24);
@@ -58,13 +65,13 @@
 :root{
   --bg:#0a0d0c; --bg-panel:#111614; --bg-raised:#171d1a; --bg-sunken:#070908; --bg-hover:#1a211e;
   --border:#1e2724; --border-strong:#567066; --border-hover:#5e7a6f;
-  --accent:#3ddc97; --accent-hi:#5fe8ad; --accent-fg:#04140d;
-  --accent-soft:rgba(61,220,151,.12); --accent-line:rgba(61,220,151,.34); --accent-ring:rgba(61,220,151,.24);
-  --text-1:#e9eeeb; --text-2:#a3b1aa; --text-3:#838f88; --text-4:#76857d;
-  --ok:#35d192; --ok-soft:rgba(53,209,146,.12); --ok-line:rgba(53,209,146,.30);
-  --warn:#e0b23c; --warn-soft:rgba(224,178,60,.12); --warn-line:rgba(224,178,60,.30);
-  --danger:#f0735f; --danger-soft:rgba(240,115,95,.12); --danger-line:rgba(240,115,95,.32);
-  --info:#5aa9f0; --info-soft:rgba(90,169,240,.12); --info-line:rgba(90,169,240,.30);
+  --accent:#2bc280; --accent-hi:#27d289; --accent-fg:#04140d;
+  --accent-soft:rgba(43,194,128,.12); --accent-line:rgba(43,194,128,.34); --accent-ring:rgba(43,194,128,.24);
+  --text-1:#c0cfc6; --text-2:#91a299; --text-3:#838f88; --text-4:#76857d;
+  --ok:#29b67d; --ok-soft:rgba(41,182,125,.12); --ok-line:rgba(41,182,125,.30);
+  --warn:#c99920; --warn-soft:rgba(201,153,32,.12); --warn-line:rgba(201,153,32,.30);
+  --danger:#ee614a; --danger-soft:rgba(238,97,74,.12); --danger-line:rgba(238,97,74,.32);
+  --info:#3f9bee; --info-soft:rgba(63,155,238,.12); --info-line:rgba(63,155,238,.30);
   --shadow-1:0 1px 2px rgba(0,0,0,.5);
   --shadow-2:0 24px 56px -16px rgba(0,0,0,.8),0 0 0 1px rgba(255,255,255,.03);
   --scrim:rgba(4,7,6,.62);
@@ -77,29 +84,29 @@
 [data-theme="emerald-dark"]{
   --bg:#0a0d0c; --bg-panel:#111614; --bg-raised:#171d1a; --bg-sunken:#070908; --bg-hover:#1a211e;
   --border:#1e2724; --border-strong:#567066; --border-hover:#5e7a6f;
-  --accent:#3ddc97; --accent-hi:#5fe8ad; --accent-fg:#04140d;
-  --accent-soft:rgba(61,220,151,.12); --accent-line:rgba(61,220,151,.34); --accent-ring:rgba(61,220,151,.24);
+  --accent:#2bc280; --accent-hi:#27d289; --accent-fg:#04140d;
+  --accent-soft:rgba(43,194,128,.12); --accent-line:rgba(43,194,128,.34); --accent-ring:rgba(43,194,128,.24);
 }
 /* 海洋 · 夜 */
 [data-theme="ocean-dark"]{
   --bg:#0a0d11; --bg-panel:#10141b; --bg-raised:#161b24; --bg-sunken:#070a0d; --bg-hover:#171d27;
   --border:#1d232e; --border-strong:#586b87; --border-hover:#607593;
-  --accent:#4d9ef5; --accent-hi:#74b5fa; --accent-fg:#04101f;
-  --accent-soft:rgba(77,158,245,.12); --accent-line:rgba(77,158,245,.34); --accent-ring:rgba(77,158,245,.24);
+  --accent:#4597ef; --accent-hi:#5da7f4; --accent-fg:#04101f;
+  --accent-soft:rgba(69,151,239,.12); --accent-line:rgba(69,151,239,.34); --accent-ring:rgba(69,151,239,.24);
 }
 /* 琥珀 · 夜 */
 [data-theme="amber-dark"]{
   --bg:#0e0c09; --bg-panel:#15120d; --bg-raised:#1c1812; --bg-sunken:#0a0806; --bg-hover:#1e1a13;
   --border:#262018; --border-strong:#786548; --border-hover:#836f4f;
-  --accent:#f0a53c; --accent-hi:#f7bd63; --accent-fg:#1a1002;
-  --accent-soft:rgba(240,165,60,.12); --accent-line:rgba(240,165,60,.34); --accent-ring:rgba(240,165,60,.24);
+  --accent:#e59320; --accent-hi:#eca637; --accent-fg:#1a1002;
+  --accent-soft:rgba(229,147,32,.12); --accent-line:rgba(229,147,32,.34); --accent-ring:rgba(229,147,32,.24);
 }
 /* 玫瑰 · 夜 */
 [data-theme="rose-dark"]{
   --bg:#0f0a0c; --bg-panel:#170f12; --bg-raised:#1e1418; --bg-sunken:#0b0708; --bg-hover:#201519;
   --border:#271b20; --border-strong:#835c69; --border-hover:#8f6573;
-  --accent:#f4728c; --accent-hi:#f9909f; --accent-fg:#1c060b;
-  --accent-soft:rgba(244,114,140,.12); --accent-line:rgba(244,114,140,.34); --accent-ring:rgba(244,114,140,.24);
+  --accent:#ec6983; --accent-hi:#f18090; --accent-fg:#1c060b;
+  --accent-soft:rgba(236,105,131,.12); --accent-line:rgba(236,105,131,.34); --accent-ring:rgba(236,105,131,.24);
 }
 /* 翡翠 · 日 */
 [data-theme="emerald-light"]{
@@ -221,7 +228,7 @@ input[type="text"],input[type="number"]{
 }
 input[type="text"]:focus,input[type="number"]:focus{border-color:var(--accent);box-shadow:var(--ring)}
 input:disabled{opacity:.55;cursor:not-allowed}
-/* 占位符用 --text-3 且不降透明度：暗色下 text-4 仅约 2.9:1，示例路径看不清 */
+/* 占位符用 --text-3 且不降透明度：暗色下 text-4 只剩约 4.7:1（贴 AA 下限），示例路径看不清 */
 input::placeholder{color:var(--text-3)}
 select{
   height:34px;padding:0 30px 0 10px;
@@ -628,6 +635,36 @@ select:focus{border-color:var(--accent);box-shadow:var(--ring)}
 .modal-note{font-size:var(--fs-sm);line-height:1.6;color:var(--text-3);margin-bottom:10px}
 .modal-foot{display:flex;justify-content:flex-end;gap:8px}
 .confirm-text{white-space:pre-wrap}
+
+/* 顶栏版本号：常显 manager 自身版本，点击打开更新历史（升级靠手动替换 exe） */
+.version-chip{font-family:var(--mono);font-size:var(--fs-xs);letter-spacing:.02em;white-space:nowrap;color:var(--text-3)}
+.version-chip:hover{color:var(--text-2)}
+
+/* ═══ 更新历史（弹窗） ═══
+   每版一个可折叠块（原生 details，键盘可用）；不另起抬升面，卡片与文字全部落在弹窗的
+   --bg-panel 上，配色对与 contrast_audit.py 的表一致（当前版本徽章沿用 ok/ok-soft 芯片） */
+.changelog-list{display:flex;flex-direction:column;gap:6px}
+.release{border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden}
+.release[open]{border-color:var(--border-strong)}
+.release-head{display:flex;align-items:center;gap:8px;padding:8px 10px;cursor:pointer;list-style:none;
+  font-family:var(--mono);font-size:var(--fs-sm);color:var(--text-1)}
+.release-head::-webkit-details-marker{display:none}
+.release-head::before{content:"▸";flex:none;font-family:var(--font);color:var(--text-4);transition:transform var(--t) var(--ease)}
+.release[open] .release-head::before{transform:rotate(90deg)}
+.release-head:hover::before{color:var(--text-2)}
+.release-cur{flex:none;padding:0 7px;border:1px solid var(--ok-line);border-radius:999px;background:var(--ok-soft);
+  font-family:var(--font);font-size:var(--fs-xs);font-weight:600;color:var(--ok)}
+.release-title{min-width:0;margin-left:2px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;
+  font-family:var(--font);font-size:var(--fs-sm);color:var(--text-2)}
+.release-body{padding:2px 10px 10px;border-top:1px solid var(--border)}
+.release-section{margin-top:9px}
+.release-section-title{margin-bottom:3px;font-size:var(--fs-sm);font-weight:600;color:var(--text-2)}
+.release-items{padding-left:18px;color:var(--text-2)}
+.release-items li{margin:2px 0}
+.release-items code{padding:0 4px;border:1px solid var(--border);border-radius:var(--r-xs);
+  font-family:var(--mono);font-size:var(--fs-xs);color:var(--text-1)}
+.release-link{margin-top:10px;font-size:var(--fs-xs);color:var(--text-3)}
+.release-link .mono{color:var(--text-2);overflow-wrap:anywhere}
 
 /* 表单字段 */
 .field{margin-bottom:14px}
