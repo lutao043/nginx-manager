@@ -86,6 +86,7 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
   "confDir": "C:/nginx/conf",
   "confPath": "C:/nginx/conf/nginx.conf",
   "confFileExists": true,
+  "managerVersion": "1.0.0-rc.2",
   "frontendOk": true
 }
 ```
@@ -94,9 +95,47 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 - `version`：`nginx -v` 输出解析；不可用时为 null。
 - `pid`：主进程 pid；不可用时为 null。
 - `confFileExists`：`confDir/nginx.conf` 是否存在。
+- `managerVersion`：**manager 自身**版本（唯一来源 `backend/server.py` 的 `server_version`，去掉 `nginx-manager/` 前缀）；
+  预览模式（未配置 nginx）同样返回。注意与 `version`（nginx 的版本）是两件事，界面顶栏显示的是本字段。
 - `frontendOk`：manager 自身前端静态资源是否可用（`index.html` 可读；预览模式同样返回）。
   exe 运行时若为 false，多为临时目录（解压资源）被清理软件删除所致——API 正常但页面 404，
   v0.6.3 起启动时会把资源持久化到数据目录，正常情况不再出现。
+
+### GET /api/changelog
+
+返回 manager 自身版本号与**更新历史**（逐版本的发布说明，最新在前），供界面「更新历史」弹窗使用。
+数据来自仓库 `release-notes/<tag>.md`（打包后随资源一同提供）；**不做任何联网检查**——
+本产品没有自动更新，升级靠手动替换 exe。
+
+**成功响应 200**
+
+```json
+{
+  "version": "1.0.0-rc.2",
+  "releases": [
+    {
+      "version": "1.0.0-rc.2",
+      "title": "版本号显示 + 更新历史（第二个候选版）",
+      "sections": [
+        {"title": "新增：页面版本号 + 更新历史（本版主打）", "items": ["顶栏常显 manager 自身版本号，点击打开「更新历史」弹窗", "更新历史逐版本列出发布说明，当前版本带「当前版本」徽章并默认展开"]}
+      ],
+      "link": "https://github.com/lutao043/nginx-manager/compare/v1.0.0-rc.1...v1.0.0-rc.2"
+    }
+  ],
+  "notesAvailable": true
+}
+```
+
+- `version`：当前运行版本，与 `GET /api/status` 的 `managerVersion` 同源。
+- `releases`：按版本号**倒序**（同号下正式版排在预发布版之前，如 `1.0.0` > `1.0.0-rc.2` > `1.0.0-rc.1`）。
+  - `version`：取自文件名（`v1.0.0-rc.1.md` → `1.0.0-rc.1`），不解析正文。
+  - `title`：文件首个 `## ` 标题，去掉开头的版本号前缀（如 `## 1.0.0-rc.1：xxx` → `xxx`）；旧版说明没有 `## ` 标题时为空串。
+  - `sections`：逐个 `### ` 小节及其要点；`items` 为行内文本，**保留 markdown 行内标记**（`**粗体**`、`` `代码` ``），
+    前端渲染前必须先转义再套白名单标记，不得直接 innerHTML。要点 = 该小节下的 `-` 列表项与散文段落（原样一行）；
+    出现在任何 `### ` 之前的内容归入一个标题为空的小节；围栏代码块、引用、表格与分隔线不进历史（不静默丢弃要点）。
+  - `link`：文末 `Full Changelog` 链接；没有时为空串。
+- `notesAvailable`：是否有可用的发布说明（`release-notes/` 可读且至少一份 `v*.md`）。为 false 时 `releases` 为空数组，
+  不代表出错——界面应提示「未找到发布说明文件」，其余功能不受影响。
 
 ### GET /api/config
 
@@ -847,6 +886,9 @@ weight=1 / 非备份 / 非下线等默认值会省略；调度算法仅支持 `r
 - 所有写操作（保存/启停/回滚）在弹确认框后进行；**保存提供「保存并备份 / 仅保存」选择**，备份仅在用户显式确认时执行（不再每次保存自动备份）。
 - `409` 响应中若含 `saved: true`，前端必须展示「已保存未应用」警告条，并给出「回滚」入口。
 - 状态面板每 10 秒轮询 `GET /api/status` 刷新运行状态与进程信息。
+- **版本号显示与更新历史**：顶栏常显 manager 自身版本号（取 `managerVersion`，显示为 `v{版本}`），点击打开「更新历史」弹窗；
+  弹窗内容来自 `GET /api/changelog`（**首次打开时才请求**，之后复用缓存），当前版本带「当前版本」标记，其余版本默认折叠。
+  **本产品没有自动更新**：不存在联网检查、下载或静默升级，弹窗只说明「升级 = 用新 exe 替换旧 exe」。
 - 保存按钮旁显示最近一次校验结果（成功/失败 + 输出摘要）。
 - 目标池地址带别名时，下拉与池列表均显示 `别名 (地址)`；无别名仅显示地址。
 - **代理切换重载询问**：`PUT /api/proxies/switch` 成功后（`nginx -t` 校验通过），前端弹确认框
