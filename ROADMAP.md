@@ -80,7 +80,7 @@
 | `0.9.x` | 冻结候选：G5 + G3 全键盘走查 + G6 | 只修 bug，不加功能 | ✅ G5/G6 已落地、G3 全键盘走查通过 |
 | `1.0.0-rc.1` | 发布候选版：把门禁全绿的源码交到真实环境验收 | 只做发布动作，不夹带新功能 | ✅ **已发布（2026-09-22）**：`server_version` 提为 `1.0.0-rc.1`、`release-notes/v1.0.0-rc.1.md` 已写；tag `v1.0.0-rc.1` 推 GitHub 与 Gitea；GitHub 流水线 `Build & Release` **成功**（run 35683165934），Release 资产 `nginx-manager-v1.0.0-rc.1.exe`（12,324,307 字节，HTTP 200 可下载）；main 上的 `Tests` 门禁同时**成功**（38 个提交首次过 CI） |
 | `1.0.0-rc.2` | 第二个候选版：把 rc.1 之后的改动（页面版本号 + 更新历史、暗夜对比度上界收紧）交真实环境验收 | 只做发布动作，不夹带新功能 | ✅ **已发布并核实（2026-09-22）**：`server_version` 提为 `1.0.0-rc.2`、`release-notes/v1.0.0-rc.2.md` 已写；tag `v1.0.0-rc.2` 与 main 推 GitHub 与 Gitea；GitHub 流水线 `Build & Release` **成功**（run 35693399802），Release 资产 `nginx-manager-v1.0.0-rc.2.exe`（12,342,236 字节，HTTP 200 可下载）；main 上的 `Tests` 与 `Sync Release Notes` 同时**成功**（提交 `e6be93e`） |
-| `1.0.0` | 正式版：三层目标全部达标 + rc 验收通过 | 验收通过后转正 | ⏳ 门槛已全部转绿（见第三节）；**验收载体已由 rc.1 换成 rc.2**（rc.1 说明里那句「只提升版本号、代码不动」作废，rc.1 之后的改动都并入 rc.2），转正动作见下方记录 |
+| `1.0.0` | 正式版：三层目标全部达标 + rc 验收通过 | 验收通过后转正 | ✅ **已发布（2026-09-23）**：转正动作已执行——`server_version` → `1.0.0`、`release-notes/v1.0.0.md` 已写、README 功能列表核对一致、`release: v1.0.0` 提交（`ea79bba`）、annotated tag `v1.0.0` 已推 GitHub；main 上的 `Tests` 门禁在该提交上**成功**，`Build & Release` 已触发（v1.0.0）；Gitea 侧推送与 Release 资产核对待网络恢复后补（详见下方发布记录） |
 
 **关键约束：先把保障建起来，再谈正式版。** 0.8.0 必须是功能冻结版。
 
@@ -125,7 +125,14 @@
 5. **实测回写（同日补记）**：GitHub Actions `Build & Release` **成功**（run 35693399802：`build-windows` 与 `release` 两个 job 全绿），Release `nginx-manager v1.0.0-rc.2` 已创建（正文即 `release-notes/v1.0.0-rc.2.md`），资产 `nginx-manager-v1.0.0-rc.2.exe` 12,342,236 字节、`content-length` 与下载探测均为 HTTP 200；`Sync Release Notes` 与 main 上的 `Tests` 门禁在提交 `e6be93e` 上同时**成功**。
 6. **面向使用者的说明口径**：发布说明按用户视角写（只讲能感知到的变化、升级方式与需要验证的点），不放内部门禁数字与用例数；内部口径留在本文件与提交记录里。
 
-**验收通过后的转正动作**：`server_version` 由 `1.0.0-rc.2` 改为 `1.0.0` → 写 `release-notes/v1.0.0.md`（须覆盖 rc.1 之后的两批改动：页面版本号 + 更新历史、暗夜对比度上界收紧）→ 同步 README 中英功能列表 → `release: v1.0.0` 提交 → 打 tag `v1.0.0` 推两个远端。**验收范围** = rc.1 的全部项目 + rc.2 的新增项。
+**验收通过后的转正动作**（**已于 2026-09-23 执行**，见下方发布记录）：`server_version` 由 `1.0.0-rc.2` 改为 `1.0.0` → 写 `release-notes/v1.0.0.md` → 同步 README 中英功能列表 → `release: v1.0.0` 提交 → 打 tag `v1.0.0` 推两个远端。**验收范围** = rc.1 的全部项目 + rc.2 的新增项 + 本轮性能优化与发布测试修复。
+
+**发布记录（2026-09-23，用户指令「补充一下 然后发布正式版」）**：以 **`v1.0.0`** 作为正式版发布。本次动作与已核实的产物：
+
+1. **发布前先补齐两道欠账**（同日的发布测试批次，见本文件第二节与 `RELEASE_TEST_REPORT.md`）：首轮测试发现的 **6 项缺陷全部修复并补齐 24 条回归**（D1 macOS 进程识别、D2 单行 `stub_status`、D3 日志面板空态占位、D4 CLI 路径不计入 configured、D5 「开启统计」提示语义、D6 HEAD 支持），双入口用例由 170 增至 **194**；性能批次与修复批次因改同一批函数（拆开会让中间提交测试不过）合并为一个提交 `7296a6d`。
+2. **转正动作**：`server_version` → `1.0.0`；新增 `release-notes/v1.0.0.md`（面向使用者：本版变化、rc 已交付内容、升级方式与重点试项）；README 中英功能列表核对与交付能力一致（本版无新增功能，无需增删）；`release: v1.0.0` 提交 `ea79bba`；annotated tag `v1.0.0`。
+3. **推送与门禁**：main 与 tag 已推 GitHub（`git@github.com:lutao043/nginx-manager.git`，本次 SSH 22 端口可用；HTTPS 通道仍报 HTTP/2 framing 错误，未使用）。main 上的 `Tests` 在 `ea79bba` 上**成功**、`Sync Release Notes` 成功，`Build & Release`（`v1.0.0`）**已触发**。
+4. **未核实项（环境限制，非代码问题）**：本机网络当时不可达，**Release 资产 `nginx-manager-v1.0.0.exe` 尚未核对**（rc.1/rc.2 各约 12.3MB）；Gitea（`origin`，`http://192.168.5.10:3020`）当时连接超时，main 与 tag 未推送、该实例也未配 runner。网络恢复后需：`git push origin main && git push origin v1.0.0`，并确认 GitHub Release 页面出现 `nginx-manager-v1.0.0.exe` 可下载。
 
 
 ## 六、怎样验证进度（可复现命令）
