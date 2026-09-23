@@ -8,12 +8,13 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "backend"))
 
 from helpers import INVALID_DIRECTIVE, VALID_CONF, write_nginx_stub  # noqa: E402
-from nginxctl import NginxController  # noqa: E402
+from nginxctl import NginxController, _ps_process_name  # noqa: E402
 
 POSIX = os.name != "nt"
 requires_posix = unittest.skipUnless(POSIX, "nginx 替身脚本依赖 POSIX shell")
@@ -226,6 +227,61 @@ class PathResolutionTest(unittest.TestCase):
         self.assertFalse(ctl.is_running())
 
 
+class PsProcessNameTest(unittest.TestCase):
+    """`ps -o comm=` 的进程名解析（macOS 返回的是完整命令行，不是可执行名）。
+
+    取错会导致：活着的 nginx 被判成「不是 nginx」→ 界面显示未运行、停止/重载被拒，
+    点启动还会先把它的 pid 文件当残留清掉，再尝试起第二个实例。
+    """
+
+    def test_macos_full_command_line(self):
+        out = "nginx: master process /opt/homebrew/bin/nginx -c /tmp/site/nginx.conf -p /tmp/site\n"
+        self.assertEqual(_ps_process_name(out), "nginx")
+
+    def test_linux_bare_name(self):
+        self.assertEqual(_ps_process_name("nginx\n"), "nginx")
+
+    def test_other_process_on_macos(self):
+        self.assertEqual(_ps_process_name("sleep 30\n"), "sleep")
+        self.assertEqual(_ps_process_name("/usr/bin/python3 -u server.py --port 8310\n"), "python3")
+
+    def test_empty_output(self):
+        self.assertEqual(_ps_process_name("  \n"), "")
+
+
+@requires_posix
+class PidIsNginxTest(unittest.TestCase):
+    """`_pid_is_nginx` 必须认得出「命令行最后一个路径段不含 nginx」的活实例。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="nm-pidname-")
+        self.conf_dir = os.path.join(self.tmp, "conf")
+        os.makedirs(self.conf_dir, exist_ok=True)
+        self.stub = write_nginx_stub(self.tmp)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _with_ps(self, out):
+        with mock.patch("nginxctl._run", return_value=(0, out, "")):
+            return NginxController._pid_is_nginx(4242)
+
+    def test_macos_started_with_dash_p(self):
+        """回归：`nginx -c ... -p /tmp/nm-pidtest` 的 comm 输出里最后一段不含 nginx。"""
+        self.assertTrue(self._with_ps(
+            "nginx: master process ./nginx-1.30.4/sbin/nginx -c /tmp/nm-pidtest/conf/nginx.conf -p /tmp/nm-pidtest\n"))
+
+    def test_linux_style(self):
+        self.assertTrue(self._with_ps("nginx\n"))
+
+    def test_non_nginx_process_is_rejected(self):
+        self.assertFalse(self._with_ps("python3 -m http.server 8000\n"))
+
+    def test_ps_unavailable_treated_as_unknown(self):
+        with mock.patch("nginxctl._run", return_value=(1, "", "")):
+            self.assertTrue(NginxController._pid_is_nginx(4242))
+
+
 @requires_posix
 class StubStatusScanTest(unittest.TestCase):
     """stub_status 定位：路径取最近包围 location，端口配对其所在 server。"""
@@ -300,6 +356,63 @@ class StubStatusScanTest(unittest.TestCase):
     def test_no_stub_status(self):
         ctl = self._conf("http {\n    server {\n        listen 80;\n    }\n}\n")
         self.assertIsNone(ctl.find_stub_status())
+
+    def test_single_line_location_is_found(self):
+        """单行写法 `location /x { stub_status; ... }` 与多行写法等价，必须同样识别。
+
+        逐行匹配（`^\\s*stub_status\\s*;`）会整块漏掉这种形态：配置里明明有状态页，
+        界面却一直报「未开启统计」，实时指标永久不可用；而且写入端认得同名 location，
+        点「开启统计」还会提示成功却没改任何东西。
+        """
+        ctl = self._conf("""http {
+    server {
+        listen 127.0.0.1:53816;
+        root /srv/www;
+        location / { index index.html; }
+        location /nginx_status { stub_status; allow 127.0.0.1; deny all; }
+    }
+}
+""")
+        stub = ctl.find_stub_status()
+        self.assertIsNotNone(stub, "单行写法的 stub_status 未被识别")
+        self.assertEqual(stub["path"], "/nginx_status")
+        self.assertEqual(stub["port"], 53816, "端口必须取该 location 所属 server 的 listen")
+
+    def test_single_line_server_block_is_found(self):
+        ctl = self._conf("http { server { listen 8443; location /nginx_status { stub_status; } } }\n")
+        stub = ctl.find_stub_status()
+        self.assertIsNotNone(stub, "整行的 server/location 未被识别")
+        self.assertEqual(stub["port"], 8443)
+        self.assertEqual(ctl.detect_listen_port(), 8443)
+
+    def test_block_head_on_next_line_keeps_path(self):
+        """块头与 `{` 分行（`location /x` 换行再 `{`）时，路径不能丢。"""
+        ctl = self._conf("""http {
+    server {
+        listen 8081;
+        location /nginx_status
+        {
+            stub_status;
+        }
+    }
+}
+""")
+        stub = ctl.find_stub_status()
+        self.assertIsNotNone(stub)
+        self.assertEqual(stub["path"], "/nginx_status")
+        self.assertEqual(stub["port"], 8081)
+
+    def test_stub_status_inside_nested_inline_block_uses_inner_path(self):
+        ctl = self._conf("""http {
+    server {
+        listen 9000;
+        location /outer { location = /inner { stub_status; } }
+    }
+}
+""")
+        stub = ctl.find_stub_status()
+        self.assertEqual(stub["path"], "/inner")
+        self.assertEqual(stub["port"], 9000)
 
 
 @requires_posix

@@ -84,6 +84,53 @@ def _strip_quoted(line: str) -> str:
     return "".join(out)
 
 
+def _ps_process_name(out: str) -> str:
+    """从 `ps -p <pid> -o comm=` 的输出里取出进程名。
+
+    macOS/BSD 的 comm 是**完整命令行**（含参数），Linux 才是裸可执行名。对整个字符串取
+    basename 会得到「最后一个 / 之后的参数片段」（如 `... -p /tmp/site` → `site`），
+    活着的 nginx 因此被判成「不是 nginx」：界面显示未运行、停止/重载被拒，点启动还会先
+    把它的 pid 文件当残留清掉。取第一个 token（去掉 macOS 的结尾冒号）才对两种平台都成立。
+    """
+    text = out.strip()
+    if not text:
+        return ""
+    return text.split(None, 1)[0].rstrip(":").rsplit("/", 1)[-1]
+
+
+def _split_config_blocks(line: str):
+    """把一行配置切成事件序列，供块结构扫描使用。
+
+    - `("head", 文本)`：`{` 之前的块头（location / server / http / …）
+    - `("stmt", 文本)`：以 `;` 结束的一条指令
+    - `("close", "")`：一个 `}`
+    - `("tail", 文本)`：行尾尚未以 `;` 或 `{` 结束的片段（块头换行再写 `{` 时用它桥接）
+
+    逐字符分词而不是逐行判断：`location /nginx_status { stub_status; allow 127.0.0.1; }`
+    这类单行写法在 nginx 里完全合法，逐行匹配会把整块漏掉（表现为配置里明明有状态页，
+    界面却一直说「未开启统计」）。引号内的 `{};` 已由 _strip_quoted 去掉。
+    """
+    buf = []
+    for ch in line:
+        if ch == "{":
+            yield "head", "".join(buf).strip()
+            buf = []
+        elif ch == "}":
+            tail = "".join(buf).strip()
+            if tail:
+                yield "stmt", tail
+            buf = []
+            yield "close", ""
+        elif ch == ";":
+            yield "stmt", "".join(buf).strip()
+            buf = []
+        else:
+            buf.append(ch)
+    tail = "".join(buf).strip()
+    if tail:
+        yield "tail", tail
+
+
 class NginxController:
     """nginx 控制核心。构造后所有方法自动适配当前平台。"""
 
@@ -91,6 +138,97 @@ class NginxController:
         self.nginx_path = os.path.abspath(nginx_path)
         self.conf_dir = os.path.abspath(conf_dir)
         self.prefix = self._detect_prefix()
+        # 配置读取/派生扫描缓存（见 _read_text_cached 的失效口径）
+        self._text_cache: dict = {}
+        self._include_files: List[str] = []
+        self._include_watch: set = set()
+        self._include_key = None
+        self._derived_key = None
+        self._derived_cache: dict = {}
+
+    # ---------- 配置读取缓存 ----------
+
+    # 缓存条目上限：单份配置的文件数远小于此；超限整体清空（配置集合小，比维护 LRU 简单且够用）
+    CONFIG_CACHE_MAX = 64
+
+    def _stat_sig(self, fp: str):
+        """文件内容身份签名 (mtime_ns, size, ino, mode)；不存在/不可读返回 None。
+
+        mode 计入签名是为了让权限变化也触发失效：仅有 stat 权限时能读到目录项却读不到
+        内容，事后 chmod 可读必须重新解析，否则会一直沿用「读不到」时的结果。"""
+        try:
+            st = os.stat(fp)
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_mode)
+
+    def _read_text_cached(self, fp: str):
+        """返回 (签名, 内容)。缓存键是**内容身份**而非时间窗：命中即证明磁盘未变，
+        因此不可能返回与磁盘不一致的内容。不可读返回 (None, None)。
+
+        读前后各取一次签名，只有两者一致才入缓存——避免「读到一半被改写」时把新内容
+        挂在旧签名下。"""
+        before = self._stat_sig(fp)
+        if before is None:
+            return None, None
+        hit = self._text_cache.get(fp)
+        if hit is not None and hit[0] == before:
+            return before, hit[1]
+        try:
+            with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except OSError:
+            return None, None
+        after = self._stat_sig(fp)
+        if after is not None and after == before:
+            if len(self._text_cache) >= self.CONFIG_CACHE_MAX:
+                self._text_cache.clear()
+            self._text_cache[fp] = (after, content)
+        return (after or before), content
+
+    def _watch_signature(self, watch) -> tuple:
+        """watch 集逐个 stat 组成的失效签名。"""
+        return tuple((p, self._stat_sig(p)) for p in sorted(watch))
+
+    def invalidate_config_cache(self) -> None:
+        """丢弃全部配置读取/派生扫描缓存。
+
+        配置写入、备份恢复等**已知**改动后显式调用：签名本就覆盖 mtime/size/inode，
+        这里做双保险，把「改动后仍读到旧值」这一整类顾虑清零。"""
+        self._text_cache.clear()
+        self._include_files = []
+        self._include_watch = set()
+        self._include_key = None
+        self._derived_key = None
+        self._derived_cache = {}
+
+    def _config_view(self) -> Tuple[List[str], tuple]:
+        """返回 (include 文件列表, 失效签名)。同一请求内多处调用只多做一次签名计算。
+
+        watch 为空只可能是「主配置读不到」（能读到主配置时它必进 watch）：此时不认为
+        缓存有效，每次都重新解析——否则「启动时还没有 nginx.conf、之后才被创建」会一直
+        命中那份空结果，配置树永远空着。"""
+        key = self._watch_signature(self._include_watch)
+        if self._include_watch and key == self._include_key:
+            return list(self._include_files), key
+        files, watch = self._resolve_include_graph()
+        self._include_files = files
+        self._include_watch = watch
+        self._include_key = self._watch_signature(watch)
+        return list(files), self._include_key
+
+    def _derived(self, name: str, compute):
+        """派生扫描结果缓存（错误/访问日志路径、stub_status、listen 端口）。
+
+        这些结果是「配置内容 + 该位置的 prefix/conf_dir」的纯函数，故与 include 图共用
+        同一失效签名：配置未变即直接复用，不再逐文件重扫每一行。"""
+        files, key = self._config_view()
+        if self._derived_key != key:
+            self._derived_cache = {}
+            self._derived_key = key
+        if name not in self._derived_cache:
+            self._derived_cache[name] = compute(files)
+        return self._derived_cache[name]
 
     # ---------- 路径推断 ----------
 
@@ -137,16 +275,14 @@ class NginxController:
         读配置而不是硬拼 <prefix>/logs：发行版配置常写 /run/nginx.pid，
         拼错路径会导致「在运行却报未运行」，或在 pgrep 兜底下误判到别的实例。
         """
-        try:
-            with open(self.main_conf_path(), "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    m = self._PID_RE.match(self._strip_config_comment(line))
-                    if m:
-                        raw = m.group(1).strip().strip("'\"")
-                        if raw and raw.lower() != "off":
-                            return raw if os.path.isabs(raw) else os.path.join(self.prefix, raw)
-        except OSError:
-            pass
+        _sig, content = self._read_text_cached(self.main_conf_path())
+        if content is not None:
+            for line in content.split("\n"):
+                m = self._PID_RE.match(self._strip_config_comment(line))
+                if m:
+                    raw = m.group(1).strip().strip("'\"")
+                    if raw and raw.lower() != "off":
+                        return raw if os.path.isabs(raw) else os.path.join(self.prefix, raw)
         p = self._compile_info().get("pidPath")
         if p:
             return p
@@ -312,7 +448,7 @@ class NginxController:
         code, out, _ = _run(["ps", "-p", str(pid), "-o", "comm="], timeout=10)
         if code != 0 or not out.strip():
             return True  # ps 不可用/无输出：信息不足，不做否定判断
-        return "nginx" in os.path.basename(out.strip()).lower()
+        return "nginx" in _ps_process_name(out).lower()
 
     def detect_process(self) -> Optional[dict]:
         """检测 nginx 是否在运行。返回 {running, pid, version, matched} 或 None（未配置时）。"""
@@ -464,11 +600,14 @@ class NginxController:
 
     # ---------- 配置树 / include 解析 ----------
 
-    def _resolve_include_pattern(self, pattern: str) -> List[str]:
-        """把 include 指令的 pattern 展开为实际文件列表（支持绝对/相对路径与通配符）。"""
+    def _resolve_include_pattern(self, pattern: str) -> Tuple[List[str], set]:
+        """把 include 指令的 pattern 展开为 (实际文件列表, 扫过的目录集合)。
+
+        目录集合进 watch 集：只看文件发现不了「glob 目录里新增了一个被 include 的文件」，
+        目录 mtime 变化能。非通配写法也记父目录，覆盖「声明的文件稍后才被创建」。"""
         pattern = pattern.strip().strip("'\"")
         if not pattern:
-            return []
+            return [], set()
         candidates = []
         if os.path.isabs(pattern):
             candidates.append(pattern)
@@ -478,9 +617,12 @@ class NginxController:
             if self.conf_dir != self.prefix:
                 candidates.append(os.path.join(self.conf_dir, pattern))
         files: List[str] = []
+        dirs: set = set()
         seen: set = set()
+        wildcard = any(ch in pattern for ch in "*?[")
         for base in candidates:
-            if any(ch in pattern for ch in "*?["):
+            dirs.add(os.path.dirname(base))
+            if wildcard:
                 for hit in glob.glob(base):
                     fp = os.path.abspath(hit)
                     if os.path.isfile(fp) and fp not in seen:
@@ -491,40 +633,48 @@ class NginxController:
                 if os.path.isfile(fp) and fp not in seen:
                     seen.add(fp)
                     files.append(fp)
-        return files
+        return files, dirs
 
     _INCLUDE_RE = re.compile(r"include\s+([^;]+);")
 
-    def collect_included_files(self) -> List[str]:
-        """递归解析 nginx.conf 的 include，返回所有被引用的配置文件绝对路径（含主配置）。"""
+    def _rel_ok(self, fp: str) -> bool:
+        """路径是否落在 confDir / prefix 之内（只索引受管理目录下的文件）。"""
+        return fp.startswith(self.conf_dir) or fp.startswith(self.prefix)
+
+    def _resolve_include_graph(self) -> Tuple[List[str], set]:
+        """BFS 解析 include 图，返回 (文件列表, watch 集)。"""
         result: List[str] = []
         visited: set = set()
+        watch: set = set()
         queue: List[str] = [self.main_conf_path()]
 
-        def rel_ok(fp: str) -> bool:
-            return fp.startswith(self.conf_dir) or fp.startswith(self.prefix)
-
         while queue:
-            cur = queue.pop(0)
-            cur = os.path.abspath(cur)
+            cur = os.path.abspath(queue.pop(0))
             if cur in visited or not os.path.isfile(cur):
                 continue
             visited.add(cur)
-            if rel_ok(cur) and cur not in result:
+            watch.add(cur)
+            if self._rel_ok(cur):
                 result.append(cur)
-            try:
-                with open(cur, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read()
-            except OSError:
+            _sig, content = self._read_text_cached(cur)
+            if content is None:
                 continue
             for m in self._INCLUDE_RE.finditer(content):
-                pattern = m.group(1)
-                for hit in self._resolve_include_pattern(pattern):
+                hits, dirs = self._resolve_include_pattern(m.group(1))
+                watch |= dirs
+                for hit in hits:
                     hit = os.path.abspath(hit)
-                    if rel_ok(hit) and hit not in visited:
+                    if self._rel_ok(hit) and hit not in visited:
                         queue.append(hit)
         result.sort(key=lambda p: (p.count(os.sep), p.lower()))
-        return result
+        return result, watch
+
+    def collect_included_files(self) -> List[str]:
+        """递归解析 nginx.conf 的 include，返回所有被引用的配置文件绝对路径（含主配置）。
+
+        结果按内容身份签名缓存：配置未变时只是若干次 os.stat，配置一变（含 glob 目录里
+        新增/删除文件）立即重新解析，故不会读到陈旧的文件集合。"""
+        return self._config_view()[0]
 
     def build_config_tree(self) -> Tuple[List[dict], List[str]]:
         """返回 (tree, included)。tree 为配置目录下按目录分组的文件树。"""
@@ -544,28 +694,25 @@ class NginxController:
         def make_node(rel: str, is_dir: bool) -> dict:
             return {"path": rel.replace("\\", "/"), "name": os.path.basename(rel) or rel, "isDir": is_dir, "children": []}
 
-        # 构建目录树
+        # 构建目录树。目录节点按**目录相对路径**查表：原实现按 basename 线性扫同层，
+        # 单个目录下文件多时是 O(N²)；相对路径唯一，故可直接当键。
         root: List[dict] = []
-
-        def find_child(nodes: List[dict], name: str) -> Optional[dict]:
-            for n in nodes:
-                if n["name"] == name and n["isDir"]:
-                    return n
-            return None
+        dir_nodes: dict = {}
 
         for rel in rels:
             parts = rel.split(os.sep)
             cur = root
-            for i, part in enumerate(parts):
-                is_last = i == len(parts) - 1
-                if is_last:
-                    node = make_node("/".join(parts[: i + 1]), False)
+            for i, _part in enumerate(parts):
+                prefix = "/".join(parts[: i + 1])
+                if i == len(parts) - 1:
+                    node = make_node(prefix, False)
                     node.pop("children")
                     cur.append(node)
                 else:
-                    child = find_child(cur, part)
+                    child = dir_nodes.get(prefix)
                     if child is None:
-                        child = make_node("/".join(parts[: i + 1]), True)
+                        child = make_node(prefix, True)
+                        dir_nodes[prefix] = child
                         cur.append(child)
                     cur = child["children"]
         return root, [r.replace("\\", "/") for r in rels]
@@ -581,6 +728,9 @@ class NginxController:
         只看 <prefix>/logs/error.log 会把「别的文件」当成当前日志展示。
         跳过 stderr / syslog: / memory: / off 等非文件目标。返回的路径可能尚不存在。
         """
+        return list(self._derived("error_log_paths", self._scan_error_log_paths))
+
+    def _scan_error_log_paths(self, files: List[str]) -> List[str]:
         paths: List[str] = []
 
         def _push(p: str) -> None:
@@ -588,11 +738,9 @@ class NginxController:
             if p not in paths:
                 paths.append(p)
 
-        for fp in self.collect_included_files():
-            try:
-                with open(fp, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read()
-            except OSError:
+        for fp in files:
+            _sig, content = self._read_text_cached(fp)
+            if content is None:
                 continue
             for line in content.split("\n"):
                 m = self._ERROR_LOG_RE.match(self._strip_config_comment(line))
@@ -653,6 +801,9 @@ class NginxController:
     def find_access_log_paths(self) -> List[str]:
         """候选访问日志路径：配置 access_log 指令解析（相对 prefix）+ 默认兜底路径，去重。
         跳过 off / syslog: / memory: 等非文件目标。返回的路径可能尚不存在（文件轮转前）。"""
+        return list(self._derived("access_log_paths", self._scan_access_log_paths))
+
+    def _scan_access_log_paths(self, files: List[str]) -> List[str]:
         paths: List[str] = []
 
         def _push(p: str) -> None:
@@ -660,11 +811,9 @@ class NginxController:
             if p not in paths:
                 paths.append(p)
 
-        for fp in self.collect_included_files():
-            try:
-                with open(fp, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read()
-            except OSError:
+        for fp in files:
+            _sig, content = self._read_text_cached(fp)
+            if content is None:
                 continue
             for line in content.split("\n"):
                 m = self._ACCESS_LOG_RE.match(self._strip_config_comment(line))
@@ -738,18 +887,22 @@ class NginxController:
 
         delivered = text[:cut + 1]
         offset = since + len(delivered.encode("utf-8"))
-        # 行数上限（正常轮询到不了；一次积压很多时才触发），裁掉头部后 offset 仍是正确的读取位置
+        # 行数上限（正常轮询到不了；一次积压很多时才触发），裁掉头部后 offset 仍是正确的读取位置。
+        # 必须用 "\n" 重新拼接：delivered 末尾是换行，split 后的末元素为空串，
+        # "\n".join 正好还原「最后 max_lines 行 + 结尾换行」；用 "".join 会把所有行粘成一行。
         kept = delivered.split("\n")
         if len(kept) - 1 > max_lines:
-            delivered = "".join(kept[-(max_lines + 1):])
+            delivered = "\n".join(kept[-(max_lines + 1):])
         return delivered, offset, size, False, reach_cap and offset < size
 
     # ---------- stub_status 实时指标 ----------
 
-    _STUB_RE = re.compile(r"^\s*stub_status\s*;")
-    _LISTEN_RE = re.compile(r"^\s*listen\s+([^;]+);")
-    _SERVER_HEAD_RE = re.compile(r"^\s*server\s*\{")
-    _LOCATION_HEAD_RE = re.compile(r"^\s*location\s+(.+?)\s*(?:\{\s*)?$")
+    # 这些正则匹配的是**语句/块头**（`;` 与 `{` 已被 _split_config_blocks 切掉），不是整行
+    _STUB_STMT_RE = re.compile(r"^stub_status$")
+    _LISTEN_STMT_RE = re.compile(r"^listen\s+(.+)$")
+    # 块头关键字：`server` / `http` / `stream` / `upstream <名字>`（`server_name` 这类前缀不改块）
+    _BLOCK_HEAD_RE = re.compile(r"^(server|http|stream|upstream)(?:\s.*)?$")
+    _LOCATION_HEAD_RE = re.compile(r"^\s*location\s+(.+?)\s*$")
 
     @staticmethod
     def _location_path_of(expr: str) -> str:
@@ -779,51 +932,57 @@ class NginxController:
         用「块种类栈」跟踪上下文：stub_status 写在哪台 server，指标就该走那台 server 的
         listen 端口。旧实现把「配置里第一个 listen」和「stub_status 所在 location」分开取，
         多 server / 多端口配置下会抓到错误端口（表现为指标一直取不到）。
+
+        判定单位是**语句**而不是行：`location /nginx_status { stub_status; allow 127.0.0.1; }`
+        这种单行写法与多行写法等价，逐行匹配会整块漏掉（配置里明明有状态页，界面却一直
+        报「未开启统计」，而且因为写入端认得同名 location，点「开启统计」还会提示成功）。
         """
         stack: List[dict] = []
+        pending_head = ""  # 块头与 `{` 分行时的桥接（`location /x` 换行后再写 `{`）
         for raw in lines:
             s = _strip_quoted(self._strip_config_comment(raw))
-            kind = None
-            head = self._LOCATION_HEAD_RE.match(s)
-            if head:
-                kind = "location"
-            elif self._SERVER_HEAD_RE.match(s):
-                kind = "server"
-            elif re.match(r"^\s*http\s*\{", s):
-                kind = "http"
-            elif re.match(r"^\s*stream\s*\{", s):
-                kind = "stream"
-            elif re.match(r"^\s*upstream\s", s):
-                kind = "upstream"
-            else:
-                head = None
-            lm = self._LISTEN_RE.match(s)
-            if lm:
-                port = self._port_of_token(lm.group(1).strip().split()[0])
-                for frame in reversed(stack):
-                    if frame["kind"] == "server":
-                        if frame.get("listen") is None:
-                            frame["listen"] = port
-                        break
-            if self._STUB_RE.match(s):
-                path = port = None
-                for frame in reversed(stack):
-                    if frame["kind"] == "location" and path is None:
-                        path = frame.get("path")
-                    if frame["kind"] == "server":
-                        port = frame.get("listen")
-                        break
-                return path, port
-            for ch in s:
-                if ch == "{":
-                    frame = {"kind": kind or "block", "listen": None}
-                    if kind == "location" and head:
-                        frame["path"] = self._location_path_of(head.group(1))
-                    stack.append(frame)
-                    kind = None
-                elif ch == "}":
+            for event, text in _split_config_blocks(s):
+                if event == "close":
                     if stack:
                         stack.pop()
+                    continue
+                if event == "tail":
+                    # 未以 ; 或 { 收尾的行尾片段：只可能是块头（`{` 写在下一行），
+                    # 其余形态（跨行指令）与本次扫描无关。
+                    if text and (self._LOCATION_HEAD_RE.match(text) or self._BLOCK_HEAD_RE.match(text)):
+                        pending_head = text
+                    continue
+                if event == "head":
+                    head_text = text or pending_head
+                    pending_head = ""
+                    frame = {"kind": "block", "listen": None}
+                    head = self._LOCATION_HEAD_RE.match(head_text)
+                    if head:
+                        frame["kind"] = "location"
+                        frame["path"] = self._location_path_of(head.group(1))
+                    elif self._BLOCK_HEAD_RE.match(head_text):
+                        frame["kind"] = self._BLOCK_HEAD_RE.match(head_text).group(1)
+                    stack.append(frame)
+                    continue
+                # event == "stmt"：块内的一条指令
+                lm = self._LISTEN_STMT_RE.match(text)
+                if lm:
+                    port = self._port_of_token(lm.group(1).strip().split()[0])
+                    for frame in reversed(stack):
+                        if frame["kind"] == "server":
+                            if frame.get("listen") is None:
+                                frame["listen"] = port
+                            break
+                    continue
+                if self._STUB_STMT_RE.match(text):
+                    path = port = None
+                    for frame in reversed(stack):
+                        if frame["kind"] == "location" and path is None:
+                            path = frame.get("path")
+                        if frame["kind"] == "server":
+                            port = frame.get("listen")
+                            break
+                    return path, port
         return None, None
 
     def find_stub_status(self) -> Optional[dict]:
@@ -832,13 +991,15 @@ class NginxController:
         返回 {path, file, port}（port 为所在 server 的 listen 端口，解析不到为 None）
         或 None。location 路径取最近一层包围 location，嵌套 location 场景也成立。
         """
-        for fp in self.collect_included_files():
-            try:
-                with open(fp, "r", encoding="utf-8", errors="replace") as f:
-                    lines = f.read().split("\n")
-            except OSError:
+        hit = self._derived("stub_status", self._scan_stub_status_files)
+        return dict(hit) if hit else None
+
+    def _scan_stub_status_files(self, files: List[str]) -> Optional[dict]:
+        for fp in files:
+            _sig, content = self._read_text_cached(fp)
+            if content is None:
                 continue
-            path, port = self._scan_stub_status(lines)
+            path, port = self._scan_stub_status(content.split("\n"))
             if path:
                 return {"path": path, "file": fp, "port": port}
         return None
@@ -847,19 +1008,24 @@ class NginxController:
         """从配置解析第一个 listen 端口（本机抓取 stub_status 用）。
         支持 `listen 80;` / `listen 127.0.0.1:8080;` / `listen [::]:80;`；
         unix: 监听与纯地址无端口形式跳过。找不到返回 None（调用方兜底 80）。"""
-        for fp in self.collect_included_files():
-            try:
-                with open(fp, "r", encoding="utf-8", errors="replace") as f:
-                    lines = f.read().split("\n")
-            except OSError:
+        return self._derived("listen_port", self._scan_listen_port)
+
+    def _scan_listen_port(self, files: List[str]) -> Optional[int]:
+        for fp in files:
+            _sig, content = self._read_text_cached(fp)
+            if content is None:
                 continue
-            for line in lines:
-                m = self._LISTEN_RE.match(self._strip_config_comment(line))
-                if not m:
-                    continue
-                port = self._port_of_token(m.group(1).strip().split()[0])
-                if port:
-                    return port
+            for line in content.split("\n"):
+                # 与 stub_status 同一口径：按语句判断，单行 `server { listen 8080; }` 也算
+                for event, text in _split_config_blocks(_strip_quoted(self._strip_config_comment(line))):
+                    if event != "stmt":
+                        continue
+                    m = self._LISTEN_STMT_RE.match(text)
+                    if not m:
+                        continue
+                    port = self._port_of_token(m.group(1).strip().split()[0])
+                    if port:
+                        return port
         return None
 
     def fetch_stub_status(self, port: int, path: str, timeout: float = 2.0) -> Tuple[Optional[dict], Optional[str]]:

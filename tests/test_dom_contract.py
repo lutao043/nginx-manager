@@ -124,5 +124,35 @@ class DomContractTest(unittest.TestCase):
         self.assertIn("min-height", out)
 
 
+class LogPaneEmptyPlaceholderTest(unittest.TestCase):
+    """日志面板空态占位必须被「追加」路径清掉（静态守卫）。
+
+    行为背景（2026-09-23 发布测试实测）：日志为空时面板显示占位文案，之后日志增长走的是
+    「只追加文本节点」的增量路径，占位不是 chunk、不会被淘汰逻辑带走，于是变成
+    「（错误日志为空或文件不存在）2026/09/23 ...」粘在首行前面。
+
+    前端目前没有 DOM 行为测试的运行环境（仓库只做 node --check 与静态契约检查），
+    所以这里守住的是「清占位的守卫还在、且在 appendChild 之前」这一事实；删掉它即失败。
+    """
+
+    def setUp(self):
+        with open(os.path.join(FRONTEND, "js", "app.js"), encoding="utf-8") as f:
+            self.src = f.read()
+
+    def test_append_clears_empty_placeholder(self):
+        self.assertIn("el.textContent === st.empty", self.src,
+                      "logAppend 必须在追加前清掉空态占位（st.empty），否则占位会粘在日志首行前")
+
+    def test_guard_sits_before_append_child(self):
+        idx_guard = self.src.find("el.textContent === st.empty")
+        idx_append = self.src.find("el.appendChild(node)", idx_guard)
+        self.assertGreater(idx_guard, -1, "找不到清占位的守卫")
+        self.assertGreater(idx_append, idx_guard, "清占位必须发生在 appendChild 之前")
+
+    def test_empty_text_is_defined_for_both_panes(self):
+        for needle in ("（错误日志为空或文件不存在）", "（访问日志为空或文件不存在）"):
+            self.assertIn(needle, self.src, "空态文案缺失：%s" % needle)
+
+
 if __name__ == "__main__":
     unittest.main()

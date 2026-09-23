@@ -466,12 +466,18 @@ def _render_targets(lines: List[str], block: ProxyBlock, targets: List[str],
         m = PROXY_PASS_RE.match(lines[block.pp_lines[0]])
         if m and m.group(1):
             indent = m.group(1)
+    # 别名映射与行集合各建一次：原实现按目标逐个 alias_of()（每次都要重排 items，O(T² log T)），
+    # 且用列表做行号成员判定（O(块行数 × T)）
+    alias_by_url: dict = {}
+    for it in block.items:
+        if it["alias"] and it["url"] not in alias_by_url:
+            alias_by_url[it["url"]] = it["alias"]
+    pp_set = set(block.pp_lines)
     for j in range(block.start, block.end + 1):
-        if j in block.pp_lines:
+        if j in pp_set:
             if not inserted:
                 for url in targets:
-                    alias = block.alias_of(url)
-                    new_lines.append(_pp_line(indent, url != active_url, url, alias))
+                    new_lines.append(_pp_line(indent, url != active_url, url, alias_by_url.get(url, "")))
                 inserted = True
             # 跳过旧行
             continue
@@ -649,21 +655,55 @@ class ProxyManager:
 
     def __init__(self, conf_path: str):
         self.conf_path = conf_path
-        self.content = self._read()
+        self._content = ""
+        self._rev = 0           # 内容版本号：每次 content 赋值 +1
+        self._parsed_rev = -1   # 已解析到哪个版本；相等即 blocks 与 content 一致
+        self._read_sig = None   # 上次从磁盘读取时的文件身份签名
+        self._loaded = False
         self.blocks: List[ProxyBlock] = []
-        self._refresh()  # 构造即解析：调用方（server 每请求新建实例）直接 add 时查重才有效
+        self.reload()  # 构造即解析：调用方（server 每请求新建实例）直接 add 时查重才有效
+
+    @property
+    def content(self) -> str:
+        return self._content
+
+    @content.setter
+    def content(self, value: str) -> None:
+        """唯一的赋值入口：顺带推进版本号，避免逐个调用点手工维护。"""
+        self._content = value
+        self._rev += 1
+
+    def _stat_sig(self):
+        try:
+            st = os.stat(self.conf_path)
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size, st.st_ino)
 
     def _read(self) -> str:
         with open(self.conf_path, "r", encoding="utf-8", errors="replace") as f:
             return f.read()
 
     def reload(self) -> None:
+        """从磁盘重读并重新解析；文件身份（mtime_ns/size/ino）未变则直接返回。
+
+        原实现每次调用都无条件重读+重解析，而 server 的每个请求都会新建实例、每个代理
+        操作又会反复调用它。加上 stat 门控后，重复调用不再是无谓的全文读取+解析，
+        而外部改动仍会被发现（签名一变就重读），语义与原来等价。"""
+        sig = self._stat_sig()
+        if self._loaded and sig is not None and sig == self._read_sig:
+            return
         self.content = self._read()
+        self._read_sig = sig
+        self._loaded = True
         self._refresh()
 
     def _refresh(self) -> None:
-        """从当前内存 content 重新解析 blocks（不读磁盘）。"""
+        """从当前内存 content 重新解析 blocks（不读磁盘）；内容未变则跳过。"""
+        if self._parsed_rev == self._rev:
+            return
         self.blocks = parse_proxies(self.content)
+        self._parsed_rev = self._rev
 
     def _write(self, content: str) -> None:
         atomic_write_text(self.conf_path, content)
@@ -680,13 +720,14 @@ class ProxyManager:
                 "path": b.path,
                 "active": b.active,
                 "targets": b.targets,
-                "proxyHeaders": self._has_headers(b),
+                "proxyHeaders": self._has_headers(b, lines),
                 "template": self._detect_template(b, lines),
             })
         return out
 
-    def _has_headers(self, block: ProxyBlock) -> bool:
-        lines = self.content.split("\n")
+    def _has_headers(self, block: ProxyBlock, lines: List[str]) -> bool:
+        """块内是否存在 proxy_set_header。lines 由调用方传入：原实现每个块都重新
+        split 整个文件，块一多就是 O(块数 × 文件行数)。"""
         for j in range(block.start, block.end + 1):
             if "proxy_set_header" in lines[j]:
                 return True
@@ -810,7 +851,9 @@ class ProxyManager:
         """恢复到给定原文（校验失败回滚用）。"""
         self.content = content
         self._write(content)
-        self.reload()
+        self._read_sig = self._stat_sig()
+        self._loaded = True
+        self._refresh()  # 内容版本已推进：按新原文重新解析，不回读磁盘
 
     # ---- 目标地址池（与配置文件合一：池 = 全部 proxy_pass 目标并集，增删改查直接写 conf）----
 
@@ -910,9 +953,13 @@ class ProxyManager:
         return {"ok": True}
 
     def commit(self) -> None:
-        """写回磁盘。"""
+        """写回磁盘。写入的就是内存里的 content，故只前移文件签名，不必回读一遍；
+        但仍要 _refresh()：mutate 刚改过内容时，blocks 必须跟着新内容走（版本号驱动，
+        未变则跳过，故不会重复解析）。"""
         self._write(self.content)
-        self.reload()
+        self._read_sig = self._stat_sig()
+        self._loaded = True
+        self._refresh()
 
     # ---- 负载均衡 upstream（与配置文件合一：直接读写 nginx.conf http{} 内的 upstream 块）----
 
@@ -983,7 +1030,9 @@ class ProxyManager:
 
     def enable_stub_status(self, path: str = "/nginx_status") -> dict:
         """向最后一个 server 块写入受管理的 stub_status location（仅允许本机访问）。
-        已存在同名 location 时不重复写入（ok + unchanged）。"""
+        已存在同名 location 时不重复写入，返回 already=True —— 与 API.md 里
+        POST /api/metrics/enable 的 already 语义一致，界面据此提示「已存在、未改动」。
+        （原来返回的自造字段 unchanged 没有任何消费方，导致界面把「未写入」提示成「已写入」。）"""
         path = _normalize_path(path)
         if not path:
             return {"ok": False, "error": "路径非法"}
@@ -994,7 +1043,7 @@ class ProxyManager:
                 continue
             expr = m.group(2).strip()
             if _location_path(expr) == path:
-                return {"ok": True, "unchanged": True}
+                return {"ok": True, "already": True}
         insert_at = _find_insert_point(lines)
         if insert_at is None:
             return {"ok": False, "error": "未找到可写入的 http server 块（缺失或为单行写法），请用配置编辑器手工添加"}

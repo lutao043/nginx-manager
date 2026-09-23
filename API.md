@@ -7,6 +7,7 @@
 
 - Base URL：`http://127.0.0.1:<port>`，端口由启动参数 `--port` 指定，缺省 `8310`（该端口被占用时自动改用随机空闲端口）。
 - 请求/响应体均为 JSON（`Content-Type: application/json`），UTF-8。
+- **`HEAD` 与 `GET` 同路由**：头部与 GET 完全一致（含 `Content-Length`），只是不带正文，便于 `curl -I` 做探活；静态资源同样支持。写方法与未路由路径一律 `404` / `403`，与 GET 无关。
 - 时间字段：`yyyy-MM-dd HH:mm:ss`（本地时区），内部比较用 ISO 字符串。
 - 错误响应统一：`{ "error": "<中文错误描述>", "detail": "<可选的补充信息>" }`，配合非 2xx 状态码。
 - 状态码：`200` 成功；`400` 参数错误；`403` 安全拒绝（缺 `X-Requested-With` 头的跨站写请求、路径越出配置/日志目录）；`404` 资源不存在；`409` 操作冲突（如校验失败拒绝保存、目标被引用）；`500` 服务端错误；`501` 当前环境不支持该操作（如无图形界面时弹系统选择框）。
@@ -448,7 +449,8 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 { "ok": true, "stubPath": "/nginx_status", "backupId": "20260916_120000", "test": { "ok": true, "output": "..." } }
 ```
 
-- 配置中已存在 stub_status 时不重复写入，返回 `{"ok": true, "already": true, "stubPath": "..."}`。
+- `already: true`：**未做任何改动**，两种情形共用这一字段——① 配置里已存在 stub_status（`stubPath` 为它的路径）；② 已存在同名 location（此时不会再写一个同名块，否则 `nginx -t` 必失败）。此分支不产生备份，`backupId` 为 `null`、`test.output` 为「配置无变化，未做改动」。界面据此提示「已存在，未做改动」而不是「已写入」。
+- 只有 `already` 缺省（即确实发生写入）时才返回 `backupId` 与 `test`，此时才询问是否立即重载。
 
 **错误**
 - `400`：path 非法。
@@ -465,7 +467,8 @@ python backend/server.py [--port 8310] [--nginx-path <exe>] [--conf-dir <dir>] [
 { "nginxPath": "C:/nginx/nginx.exe", "confDir": "C:/nginx/conf", "port": 8310, "backupRetention": 7, "configured": true, "preview": false, "dataDir": "C:/Users/me/AppData/Roaming/nginx-manager", "settingsFile": "C:/Users/me/AppData/Roaming/nginx-manager/settings.json", "dataDirLocked": false }
 ```
 
-- `configured`：nginxPath 与 confDir 是否均已配置。
+- `configured`：当前是否已有可用的 nginx 配置——判据是**是否已建立 controller**（`--nginx-path/--conf-dir` 参数、settings.json、工作区探测任一来源生效即可），前端据此决定直接进主界面还是弹首次向导。
+- `nginxPath` / `confDir`：**当前生效**的值（controller 优先，settings 兜底）。用命令行参数启动而尚未持久化时，这里返回命令行给的路径（界面「设置」弹窗据此回填）；保存设置才写入 settings.json。
 - `port`：当前监听端口（settings 未配置时返回默认 8310）。
 - `backupRetention`：自动保留备份份数（默认 7；0 表示不自动清理）。
 - `preview`：是否预览模式（`Handler.controller is None`，即未配置 nginx）。前端据此直接进入主界面并展示「预览模式」徽章；为 `true` 时 `nginxPath`/`confDir` 为 null。

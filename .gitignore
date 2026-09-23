@@ -33,3 +33,6 @@ version_info.py
 .mcp.json.backup.*
 .codex/config.toml
 .codex/config.toml.backup.*
+
+# 宿主会话产物（plan mode 的计划文件等；每次会话生成，不属于仓库内容）
+.zcode/plans/

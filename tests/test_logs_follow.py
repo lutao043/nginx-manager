@@ -132,6 +132,25 @@ class LogFollowTest(ServerTestCase):
         body = self.err(lines=5)
         self.assertEqual(body["content"].count("\n"), 5)
 
+    def test_incremental_lines_cap_keeps_line_breaks(self):
+        """增量读取触发行数上限时，裁剪后仍必须是**逐行**内容。
+
+        回归：上限裁剪分支用的是 "".join，把保留的行全部粘成了一行（0 个换行），
+        表现为前端「日志突然变成一整条」；顺带让前端的按换行计数的新行统计失真。
+        旧用例只覆盖了尾部读取（read_log_file）的上限，没覆盖增量分支。
+        """
+        self._write(self.error_log, _lines(2))
+        first = self.err()
+        burst = "".join("burst-%03d\n" % i for i in range(1, 251))
+        self._append(self.error_log, burst)
+
+        body = self.err(since=first["offset"], lines=200)
+        self.assertEqual(body["content"].count("\n"), 200, "裁剪后应恰好保留 200 行")
+        self.assertEqual(body["content"].split("\n")[0], "burst-051", "保留的应是最新的 200 行")
+        self.assertTrue(body["content"].endswith("burst-250\n"), "末行必须是最后写入的那行")
+        self.assertEqual(body["offset"], self._size(self.error_log),
+                         "裁剪头部不应影响 offset（它仍指向读取位置）")
+
     # ---- 单次字节上限与续取 ----
 
     def test_chunk_cap_marks_has_more_and_progresses(self):

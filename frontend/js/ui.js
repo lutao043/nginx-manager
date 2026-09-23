@@ -4,6 +4,33 @@
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
+/* 只在值真的变化时写 DOM。
+
+   轮询类刷新（状态条每 10s 一次）里大量字段其实是长期不变的（版本号、pid、配置路径、
+   按钮禁用态），每次照写会白触发节点重排，也让读屏重复播报同一内容。
+
+   值统一按字符串比较：textContent 永远是字符串，而 pid、活跃连接数这类字段是数字，
+   直接与数字比会恒不相等、守卫静默失效（实测踩到：nginx 运行时该字段每轮都被重写）。 */
+function setText(el, value) {
+  if (!el) return;
+  const next = value == null ? "" : String(value);
+  if (el.textContent !== next) el.textContent = next;
+}
+
+function setTitle(el, value) {
+  if (!el) return;
+  const next = value == null ? "" : String(value);
+  if (el.title !== next) el.title = next;
+}
+
+function setDisabled(el, value) {
+  if (el && el.disabled !== value) el.disabled = value;
+}
+
+function setHidden(el, value) {
+  if (el && el.hidden !== value) el.hidden = value;
+}
+
 /* 防抖：连续调用只执行最后一次（搜索输入等高频事件） */
 function debounce(fn, ms) {
   let t = null;

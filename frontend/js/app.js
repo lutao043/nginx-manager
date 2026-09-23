@@ -76,8 +76,11 @@ const App = (() => {
     $("#dashboard").hidden = false;
     updateReloadHint();
     refreshStatus();
-    await Promise.all([loadTree(), loadBackups(), logPoll(logPanes.errorlog), logPoll(logPanes.accesslog)]);
+    // 不在这里预拉日志：默认停靠页签是「配置备份」，两个日志面板都被隐藏。
+    // 切到日志页签时 switchDock → syncLogPolling 会立刻拉一次，内容同样即时可见。
+    await Promise.all([loadTree(), loadBackups()]);
     Object.keys(logPanes).forEach((key) => logUpdateUI(logPanes[key]));   // 跟随按钮初态与状态一致
+    syncLogPolling();
     if (preview) {
       toast("预览模式：未配置 nginx，可浏览界面；点「设置」配置后可操作", "info");
     } else {
@@ -161,14 +164,9 @@ const App = (() => {
     $("#accessLogPath").addEventListener("change", () => logReload(logPanes.accesslog));
     $("#accessLogFilter").addEventListener("input", debounce(() => logRender(logPanes.accesslog), 150));
     logBindScroll(logPanes.accesslog);
-    // 页面切到后台时停掉日志轮询（回来再续），不可见时空转没有意义
-    document.addEventListener("visibilitychange", () => {
-      Object.keys(logPanes).forEach((key) => {
-        const st = logPanes[key];
-        if (document.hidden) logStop(st);
-        else if (st.active) logStart(st);
-      });
-    });
+    // 页面切到后台时停掉日志轮询（回来再续），不可见时空转没有意义。
+    // 前台恢复时 syncLogPolling 会重新激活并立刻拉一次（回来即见最新，不用等下一个周期）。
+    document.addEventListener("visibilitychange", () => syncLogPolling());
     // 负载均衡 upstream
     $("#btnRefreshUpstreams").addEventListener("click", loadUpstreams);
     $("#btnAddUpstream").addEventListener("click", () => openUpstreamModal(null));
@@ -274,6 +272,9 @@ const App = (() => {
       tab.tabIndex = active ? 0 : -1;   // roving tabindex：整组只留一个 Tab 停靠点
       $(ref.view).hidden = !active;
     });
+    // 日志面板在 #viewConfig 内：切走时整棵子树已隐藏，必须**立刻**停表。
+    // 放在下面串行加载之前——否则那几百毫秒里隐藏面板还会继续轮询与渲染。
+    syncLogPolling();
     // 按依赖顺序串行加载：代理列表的标签要用地址池别名、目标候选要用 upstream 名称，
     // 并发加载时先返回的那个会拿着旧状态渲染（别名/候选缺一块，要等下次刷新才对）
     if (name === "proxies") {
@@ -312,7 +313,22 @@ const App = (() => {
     accesslog: { tab: "#dockTabAccessLog",  body: "#dockAccessLog" },
   };
 
+  /* 当前停靠页签。日志轮询要同时看它和「配置文件页签是否可见」：
+     日志面板在 #viewConfig 内，切到代理管理/负载均衡后整棵子树都是隐藏的。 */
+  let activeDock = "backups";
+
+  /* 日志轮询的唯一开关：可见（配置文件页签 + 页面在前台）且是当前停靠页签才轮询。
+     状态未变时不重复调用 logActivate——它会在打开时立刻拉一次，重复调用就是白多一个请求。 */
+  function syncLogPolling() {
+    const on = !$("#dashboard").hidden && !$("#viewConfig").hidden && !document.hidden;
+    Object.keys(logPanes).forEach((key) => {
+      const want = on && key === activeDock;
+      if (logPanes[key].active !== want) logActivate(logPanes[key], want);
+    });
+  }
+
   function switchDock(name) {
+    activeDock = name;
     Object.entries(DOCK_MAP).forEach(([key, ref]) => {
       const active = key === name;
       const tab = $(ref.tab);
@@ -322,7 +338,7 @@ const App = (() => {
       $(ref.body).hidden = !active;
     });
     // 只有当前可见的日志面板才轮询；切走即停，切回立刻拉一次
-    Object.keys(logPanes).forEach((key) => logActivate(logPanes[key], key === name));
+    syncLogPolling();
   }
 
   /* ---------- 向导保存 ---------- */
@@ -448,7 +464,8 @@ const App = (() => {
       await loadTree();
       refreshStatus();
       loadBackups();
-      logReload(logPanes.errorlog);
+      // 只有该日志面板正在轮询时才重载；隐藏面板交给 syncLogPolling 在切回时按需拉取
+      if (logPanes.errorlog.active) logReload(logPanes.errorlog);
       loadProxies();
       loadPool();
     } catch (e) {
@@ -495,26 +512,26 @@ const App = (() => {
         badge.className = "badge badge-" + (key === "running" ? "running" : key === "stopped" ? "stopped" : "unknown");
         $("#stRunning").textContent = text;
       }
-      $("#stVersion").textContent = st.version || "—";
+      setText($("#stVersion"), st.version || "—");
       // 顶栏版本号：manager 自身版本（与上面 nginx 的「版本」是两件事）
       const verBtn = $("#btnVersion");
-      if (verBtn && st.managerVersion) verBtn.textContent = "v" + st.managerVersion;
-      $("#stPid").textContent = st.pid || "—";
+      if (verBtn && st.managerVersion) setText(verBtn, "v" + st.managerVersion);
+      setText($("#stPid"), st.pid || "—");
       const confEl = $("#stConf");
-      confEl.textContent = st.confPath || (preview ? "（预览模式）" : "—");
-      confEl.title = st.confPath || ""; // 状态条中路径会被省略号截断，悬停可看全路径
+      setText(confEl, st.confPath || (preview ? "（预览模式）" : "—"));
+      setTitle(confEl, st.confPath || ""); // 状态条中路径会被省略号截断，悬停可看全路径
       // 启停按钮随运行状态可用/禁用；restart 内部是先退再启，停止时也可用（等同启动）
       const running = !preview && !!st.running;
-      $("#btnStart").disabled = preview || running;
-      $("#btnStop").disabled = !running;
-      $("#btnReload").disabled = !running;
-      $("#btnRestart").disabled = preview;
-      $("#btnTest").disabled = preview;
+      setDisabled($("#btnStart"), preview || running);
+      setDisabled($("#btnStop"), !running);
+      setDisabled($("#btnReload"), !running);
+      setDisabled($("#btnRestart"), preview);
+      setDisabled($("#btnTest"), preview);
       // 代理页顶部同步显示当前管理的配置文件完整路径
       const cp = $("#confPathText");
       if (cp) {
-        cp.textContent = st.confPath || (preview ? "（预览模式，未配置）" : "—");
-        cp.title = st.confPath || "";
+        setText(cp, st.confPath || (preview ? "（预览模式，未配置）" : "—"));
+        setTitle(cp, st.confPath || "");
       }
       // 实时连接指标（stub_status）
       updateMetrics(st);
@@ -584,9 +601,9 @@ const App = (() => {
   async function updateMetrics(st) {
     const connEl = $("#stConn"), reqEl = $("#stReq"), btn = $("#btnMetricsEnable");
     if (preview || !st.running) {
-      connEl.textContent = "—";
-      reqEl.textContent = "—";
-      btn.hidden = true;
+      setText(connEl, "—");
+      setText(reqEl, "—");
+      setHidden(btn, true);
       lastMetricsSample = null;
       return;
     }
@@ -594,34 +611,37 @@ const App = (() => {
       const m = await api.metrics();
       if (m.available) {
         const mt = m.metrics || {};
-        connEl.textContent = mt.active != null ? mt.active : "—";
+        setText(connEl, mt.active != null ? mt.active : "—");
         let reqText = mt.requests != null ? String(mt.requests) : "—";
         if (mt.requests != null && lastMetricsSample) {
           const dt = (Date.now() - lastMetricsSample.ts) / 1000;
           const dr = mt.requests - lastMetricsSample.requests;
           if (dt > 0 && dr >= 0) reqText += "（+" + (dr / dt).toFixed(1) + "/s）";
         }
-        reqEl.textContent = reqText;
+        setText(reqEl, reqText);
         lastMetricsSample = mt.requests != null ? { ts: Date.now(), requests: mt.requests } : null;
-        btn.hidden = true;
+        setHidden(btn, true);
       } else {
-        connEl.textContent = "—";
-        reqEl.textContent = "—";
+        setText(connEl, "—");
+        setText(reqEl, "—");
         lastMetricsSample = null;
         // nginx 运行中但未配置 stub_status → 提供一键开启
-        btn.hidden = m.reason !== "not_configured";
+        setHidden(btn, m.reason !== "not_configured");
       }
     } catch (e) { /* 指标获取失败不影响状态栏 */ }
   }
 
   async function enableMetricsFlow() {
     if (inPreviewGuard("开启状态页")) return;
-    const ok = await confirmDialog("将在 nginx.conf 最后一个 server 块写入 stub_status 状态页（/nginx_status，仅允许本机访问），自动备份并校验。确认？");
+    const ok = await confirmDialog("将在 nginx.conf 最后一个 server 块写入 stub_status 状态页（/nginx_status，仅允许本机访问）；有实际改动时会先自动备份并校验，已存在同名 location 则不做改动。确认？");
     if (!ok) return;
     try {
       const res = await api.enableMetrics();
       if (res.already) {
-        toast("状态页已存在，无需重复开启", "info");
+        // 已存在同名 location 时后端不写入（再写一个同名 location 会让 nginx -t 失败），
+        // 提示按事实说「未做改动」：这个分支既可能是状态页已在，也可能是同名 location
+        // 存在但里面没有 stub_status，不能一口咬定「状态页已存在」。
+        toast((res.stubPath || "/nginx_status") + " 已存在，未做改动", "info");
       } else {
         toast("状态页配置已写入并通过 nginx -t 校验", "success");
         const reloadNow = await confirmDialog("是否立即重载 nginx 使状态页生效？");
@@ -665,6 +685,16 @@ const App = (() => {
     treeData.forEach((node) => nav.appendChild(renderTreeNode(node, 0)));
   }
 
+  /* 只挪高亮，不重建整棵树。
+
+     openFile 原来为了换个高亮调用 renderTree()：每个节点要重建约 6 个元素 + 2~3 个监听器，
+     而且顺手把用户手动折叠的目录状态一起丢了。这里只遍历已有节点改 class（不建任何元素）。 */
+  function setTreeActive(path) {
+    $("#fileTree").querySelectorAll(".tree-item").forEach((el) => {
+      el.classList.toggle("active", !!path && el.dataset.path === path);
+    });
+  }
+
   /* 文件树图标：内联 SVG（复用 index.html 的 sprite，离线无外部资源） */
   const TREE_ICON_DIR = '<svg class="i"><use href="#i-folder"/></svg>';
   const TREE_ICON_FILE = '<svg class="i"><use href="#i-file"/></svg>';
@@ -675,6 +705,7 @@ const App = (() => {
     const item = document.createElement("div");
     item.className = "tree-item" + (currentFile === node.path ? " active" : "");
     item.style.paddingLeft = (8 + depth * 14) + "px";
+    item.dataset.path = node.path;  // 供 setTreeActive 定位，避免为了挪高亮重建整棵树
 
     const arrow = document.createElement("span");
     arrow.className = "arrow";
@@ -960,7 +991,7 @@ const App = (() => {
     const seq = ++openFileSeq;
     currentFile = path;
     if (force) editing = false;
-    renderTree(); // 高亮
+    setTreeActive(path); // 高亮（只改已有节点的 class，不重建树）
     try {
       const data = await api.readFile(path);
       if (seq !== openFileSeq) return; // 已被更晚的 openFile 取代：丢弃本次结果
@@ -1270,13 +1301,16 @@ const App = (() => {
     },
   };
   Object.keys(logPanes).forEach((key) => Object.assign(logPanes[key], {
-    follow: true,    // 是否跟随（贴底自动滚动）
-    offset: null,    // 下次增量读取的起始字节偏移；null = 尚未加载
-    raw: "",         // 已加载的原始文本（过滤在此之上做）
-    pending: 0,      // 暂停期间累计的新行数
+    follow: true,      // 是否跟随（贴底自动滚动）
+    offset: null,      // 下次增量读取的起始字节偏移；null = 尚未加载
+    chunks: [],        // 缓冲分块账本 [{text, lines, node}]：追加/淘汰按块做，不整段重排
+    lines: 0,          // 缓冲内累计换行数（随 chunks 同步维护，免得每次 split 全文）
+    pending: 0,        // 暂停期间累计的新行数
     loading: false,
     timer: null,
-    active: false,   // 当前停靠页签是否是它（只有可见面板才轮询）
+    chain: null,       // hasMore 续取的自链定时器（停表时要一并清掉）
+    uiKey: "",         // 上次渲染的工具栏状态：没变就不碰 DOM
+    active: false,     // 是否应当轮询（配置文件页签可见 + 是当前停靠页签 + 页面在前台）
   }));
 
   function logAtBottom(el) { return el.scrollHeight - el.scrollTop - el.clientHeight <= LOG_BOTTOM_SLACK; }
@@ -1284,47 +1318,129 @@ const App = (() => {
   /* 访问日志的本地过滤关键词；无过滤时为空串，走「只追加」的快路径 */
   function logKeyword(st) { return st.filter ? $(st.filter).value.trim().toLowerCase() : ""; }
 
-  /* 缓冲按行封顶，超限从头部丢弃；返回是否真的裁过（裁过就得整体重渲染） */
-  function logTrim(st) {
-    const lines = st.raw.split("\n");
-    if (lines.length <= LOG_MAX_LINES + 1) return false;
-    st.raw = lines.slice(lines.length - LOG_MAX_LINES - 1).join("\n");
-    return true;
+  function logCountNewlines(s) {
+    let n = 0;
+    let i = s.indexOf("\n");
+    while (i >= 0) { n += 1; i = s.indexOf("\n", i + 1); }
+    return n;
   }
 
+  /* 缓冲按行封顶，超限从**头部整块**丢弃并摘掉对应 DOM 节点；返回丢弃的行数。
+
+     原实现每次都 st.raw.split("\n") 再整段 textContent 替换：缓冲满之后每来一行都要把
+     5000 行（数百 KB）重新解析并重排一次，而这正是「跟随中的日志」每秒的固定开销。 */
+  function logTrim(st) {
+    const CAP = LOG_MAX_LINES;
+    let dropped = 0;
+    while (st.chunks.length > 1 && st.lines - st.chunks[0].lines >= CAP) {
+      const head = st.chunks.shift();
+      dropped += head.lines;
+      st.lines -= head.lines;
+      if (head.node) head.node.remove();
+    }
+    // 头部块自身就超预算（单次下发就装满了）：只裁这一块的前若干行，其余内容不动
+    const head = st.chunks[0];
+    if (head && st.lines > CAP) {
+      const drop = st.lines - CAP;
+      const text = head.text;
+      let idx = -1;
+      for (let k = 0; k < drop; k++) {
+        idx = text.indexOf("\n", idx + 1);
+        if (idx < 0) break;
+      }
+      if (idx >= 0) {
+        head.text = text.slice(idx + 1);
+        head.lines -= drop;
+        st.lines -= drop;
+        dropped += drop;
+        if (head.node) head.node.nodeValue = head.text;
+      }
+    }
+    return dropped;
+  }
+
+  /* 从缓冲整体重建视图（首次加载 / 日志轮转 / 手动刷新 / 过滤启用）。
+     过滤时 DOM 只呈现命中行，但缓冲仍保留全量，清空关键词即可回到完整内容。 */
   function logRender(st) {
     const el = $(st.pre);
     const keep = el.scrollTop;
     const kw = logKeyword(st);
-    if (!st.raw) el.textContent = st.empty;
-    else if (!kw) el.textContent = st.raw;
-    else {
-      const hit = st.raw.split("\n").filter((l) => l.toLowerCase().includes(kw));
+    const raw = st.chunks.map((c) => c.text).join("");
+    st.chunks = [];
+    st.lines = 0;
+    if (!raw) {
+      el.textContent = st.empty;
+    } else if (!kw) {
+      el.textContent = raw;
+      st.lines = logCountNewlines(raw);
+      st.chunks = [{ text: raw, lines: st.lines, node: el.firstChild }];
+    } else {
+      const hit = raw.split("\n").filter((l) => l.toLowerCase().includes(kw));
       el.textContent = hit.length ? hit.join("\n") : "（无匹配行）";
+      st.lines = logCountNewlines(raw);
+      st.chunks = [{ text: raw, lines: st.lines, node: null }];  // DOM 是过滤视图，不绑节点
     }
     el.scrollTop = st.follow ? el.scrollHeight : Math.min(keep, el.scrollHeight);
   }
 
+  /* 追加一段新内容。无过滤时只 AppendChild 一个文本节点（+ 必要的头部淘汰），
+     不重建已有内容；过滤启用时才整体重建过滤视图。 */
+  function logAppend(st, text) {
+    const el = $(st.pre);
+    const lines = logCountNewlines(text);
+    if (logKeyword(st)) {
+      st.chunks.push({ text: text, lines: lines, node: null });
+      st.lines += lines;
+      const dropped = logTrim(st);
+      // 新增行没有命中、且淘汰没动到已展示的命中行时，视图不变，不必重建
+      if (dropped > 0 || text.toLowerCase().includes(logKeyword(st))) logRender(st);
+      return;
+    }
+    // 面板此刻若显示的是空态文案（日志为空/不存在，或轮转后为空），它不是 chunk、
+    // 不会被淘汰逻辑带走，追加前必须先清掉：否则文案会粘在日志首行前面，出现
+    // 「（错误日志为空或文件不存在）2026/09/23 ... 」这种自相矛盾的显示。
+    if (!st.chunks.length && el.firstChild && el.textContent === st.empty) el.textContent = "";
+    const node = document.createTextNode(text);
+    el.appendChild(node);
+    st.chunks.push({ text: text, lines: lines, node: node });
+    st.lines += lines;
+    logTrim(st);
+    // 贴底滚动仍在同一任务里同步做（与原有行为一致）。曾试过合并到 requestAnimationFrame
+    // 以省掉这次强制重排，但引入两个真实回归：追加后到下一帧之间面板尚未贴底，滚动锚定
+    // 派发的 scroll 会被「往上滚自动暂停」误判成用户行为，跟随中的日志持续写入时把自己
+    // 暂停掉；且标签页不可见时 rAF 不触发，排队标记会永久卡住、之后再也不贴底。
+    if (st.follow) el.scrollTop = el.scrollHeight;
+  }
+
   /* 并入一段新内容；replace=true 表示全量重置（首次加载 / 日志轮转 / 手动刷新） */
   function logMerge(st, text, replace) {
-    if (replace) st.raw = "";
-    if (!text) { if (replace) logRender(st); return; }
-    st.raw += text;
-    if (replace || logKeyword(st) || logTrim(st)) logRender(st);
-    else {
-      $(st.pre).appendChild(document.createTextNode(text));
-      if (st.follow) $(st.pre).scrollTop = $(st.pre).scrollHeight;
+    if (replace) {
+      st.chunks = [];
+      st.lines = 0;
+      if (text) {
+        const lines = logCountNewlines(text);
+        st.chunks = [{ text: text, lines: lines, node: null }];
+        st.lines = lines;
+      }
+      logRender(st);
+      return;
     }
+    if (!text) return;
+    logAppend(st, text);
   }
 
   function logUpdateUI(st) {
+    const show = !st.follow && st.pending > 0;
+    // 状态没变就不碰 DOM：这条路径原来每秒都在改图标/标题/提示文本
+    const key = (st.follow ? "1" : "0") + "|" + (show ? st.pending : 0);
+    if (key === st.uiKey) return;
+    st.uiKey = key;
     const btn = $(st.btn);
     const icon = btn.querySelector("use");
     if (icon) icon.setAttribute("href", st.follow ? "#i-pause" : "#i-play");
     btn.setAttribute("aria-pressed", st.follow ? "true" : "false");
     btn.title = st.follow ? "暂停实时跟随（暂停后不再自动滚动）" : "继续实时跟随（跳到最新）";
     const hint = $(st.hint);
-    const show = !st.follow && st.pending > 0;
     hint.hidden = !show;
     hint.textContent = show ? "已暂停 · 新日志 " + st.pending + " 行" : "";
   }
@@ -1335,16 +1451,23 @@ const App = (() => {
     try {
       const data = await st.fetch(st.offset === null ? undefined : st.offset);
       const label = $(st.pathLabel);
-      if (label) label.textContent = data.logPath ? "📄 " + data.logPath : "";
+      if (label) {
+        const next = data.logPath ? "📄 " + data.logPath : "";
+        if (label.textContent !== next) label.textContent = next;  // 路径没变就不写 DOM
+      }
       if (st.pathSelect) logFillPathSelect(st, data);
       const text = data.content || "";
       // 后端只在完整行边界下发，故按换行数即可准确计新增行
-      const added = (text.match(/\n/g) || []).length;
+      const added = logCountNewlines(text);
       logMerge(st, text, !!data.reset || st.offset === null);
       if (typeof data.offset === "number") st.offset = data.offset;
       if (added && !st.follow) st.pending += added;
       logUpdateUI(st);
-      if (data.hasMore) setTimeout(() => logPoll(st), 0);   // 还有积压：立刻续取，不等下个周期
+      if (data.hasMore && st.active) {
+        // 还有积压：立刻续取，不等下个周期。自链必须受「是否仍在轮询」约束——
+        // 原来只清 timer，链式 setTimeout 管不到，切走之后还会多跑一轮。
+        st.chain = setTimeout(() => { st.chain = null; if (st.active) logPoll(st); }, 0);
+      }
     } catch (e) {
       logStop(st);        // 停表：否则每秒弹一次同样的错误
       toast(e.message, "error");
@@ -1380,6 +1503,7 @@ const App = (() => {
 
   function logStop(st) {
     if (st.timer) { clearInterval(st.timer); st.timer = null; }
+    if (st.chain) { clearTimeout(st.chain); st.chain = null; }
   }
 
   /* 只有当前可见的停靠面板才轮询：切走即停，不在后台空转 */
@@ -1394,6 +1518,8 @@ const App = (() => {
     st.offset = null;
     st.pending = 0;
     st.follow = true;
+    st.chunks = [];   // 丢弃缓冲账本：下一次轮询带 reset 会整体重建
+    st.lines = 0;
     logPoll(st);
   }
 
@@ -1665,6 +1791,22 @@ const App = (() => {
       list.innerHTML = '<p class="muted">暂无代理，点击「添加代理」创建</p>';
       return;
     }
+    // 渲染期共享的规范化键：原实现每个候选都要 poolTargetList().some(...) 与 poolAlias(t)，
+    // 两者内部又逐项跑 targetKey 的正则，规模一大就是 O(代理 × 候选 × 池条目) 次正则
+    // （50 代理 × 10 候选 × 50 池条目约 5 万次）。这里一次算好、按字符串查表。
+    const keyMemo = new Map();
+    const keyOf = (t) => {
+      let k = keyMemo.get(t);
+      if (k === undefined) { k = targetKey(t); keyMemo.set(t, k); }
+      return k;
+    };
+    const poolKeySet = new Set();
+    const aliasByKey = new Map();   // 与 poolAlias 同口径：同 key 取池中首个条目的别名
+    poolTargets.forEach((pt) => {
+      const k = keyOf(pt.target);
+      poolKeySet.add(k);
+      if (!aliasByKey.has(k)) aliasByKey.set(k, pt.alias);
+    });
     list.innerHTML = "";
     proxies.forEach((p) => {
       const item = document.createElement("div");
@@ -1693,32 +1835,33 @@ const App = (() => {
       row.className = "proxy-item-row";
       const select = document.createElement("select");
       // 下拉选项读取自配置文件（池 = 全部 proxy_pass 目标并集 ∪ 该代理已有地址），
+      // 每个代理只用算一次的目标 key 集合（原实现每个候选都重新扫一遍 p.targets）
+      const pTargets = p.targets || [];
+      const pTargetKeys = new Set(pTargets.map(keyOf));
       // 按规范化 key 去重，等价写法（斜杠/大小写/默认端口）只展示一条
       const merged = [];
-      const seenKeys = new Set();
+      const mergedIndex = new Map();   // key -> merged 下标（原来靠 findIndex 每次重跑正则）
       const pushTarget = (t, override) => {
-        const k = targetKey(t);
-        if (seenKeys.has(k)) {
+        const k = keyOf(t);
+        const i = mergedIndex.get(k);
+        if (i !== undefined) {
           // 同 key 已存在（池地址在先）：代理自身写法优先展示（切换无需改配置）
-          if (override) {
-            const i = merged.findIndex((x) => targetKey(x) === k);
-            if (i >= 0) merged[i] = t;
-          }
+          if (override) merged[i] = t;
           return;
         }
-        seenKeys.add(k);
+        mergedIndex.set(k, merged.length);
         merged.push(t);
       };
       poolTargets.forEach((pt) => pushTarget(pt.target));
-      (p.targets || []).forEach((t) => { if (t === p.active) pushTarget(t, true); });
-      (p.targets || []).forEach((t) => pushTarget(t, true));
+      pTargets.forEach((t) => { if (t === p.active) pushTarget(t, true); });
+      pTargets.forEach((t) => pushTarget(t, true));
       merged.forEach((t) => {
         const opt = document.createElement("option");
         opt.value = t;
-        const tk = targetKey(t);
-        const inProxy = (p.targets || []).some((x) => targetKey(x) === tk);
-        const inPool = poolTargetList().some((x) => targetKey(x) === tk);
-        const alias = poolAlias(t);
+        const tk = keyOf(t);
+        const inProxy = pTargetKeys.has(tk);
+        const inPool = poolKeySet.has(tk);
+        const alias = aliasByKey.get(tk) || "";
         const tags = [];
         if (t === p.active) tags.push("当前");
         if (!inProxy && inPool) tags.push("池");
@@ -1775,7 +1918,8 @@ const App = (() => {
       toast("已切换: " + p.path + " → " + target, "success");
       loadProxies();
       loadPool(); // 切换可能自动追加备选，配置文件已变化
-      refreshStatus();
+      // 状态刷新只留末尾这一次：它同时覆盖「仅切换」和「切换并重载」两种情况
+      // （原来这里先刷一次、重载后再刷一次，每次点击两遍 /api/status + /api/metrics）
       if (choice === "reload") {
         try {
           const reloadRes = await api.nginxAction("reload");

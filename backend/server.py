@@ -30,9 +30,10 @@ import sys
 import threading
 import time
 import webbrowser
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from email.utils import formatdate, parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Optional
+from typing import Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 from nginxctl import NginxController, create_controller
@@ -419,9 +420,6 @@ class SettingsStore:
         self.data[key] = value
         self.save()
 
-    def configured(self) -> bool:
-        return bool(self.data.get("nginxPath") and self.data.get("confDir"))
-
 
 # ---------- 备份 ----------
 
@@ -605,20 +603,65 @@ class Server(ThreadingHTTPServer):
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "nginx-manager/1.0.0-rc.2"
+
+    # HTTP/1.1：默认带 keep-alive，轮询不再每次新建 TCP 连接 + 新线程（空闲时约 1.2 req/s，
+    # 按 HTTP/1.0 算每天要新建约 10 万次线程）。开启前提是**每个响应都必须带准确的
+    # Content-Length**（否则客户端会一直等下一条响应）——本服务只有 _send_json 与
+    # _serve_static/304 两条响应写出路径，均显式设置。
+    protocol_version = "HTTP/1.1"
+    # 空闲 keep-alive 连接的超时：到期即释放线程，避免连接被挂在后台不放
+    timeout = 30
+
     settings: SettingsStore = None  # type: ignore
     data_dirs: dict = {}
     controller: NginxController = None  # type: ignore
 
     # ---- 工具 ----
 
+    _body_consumed = True  # 每个请求开始时由 handle_one_request 复位
+    _head_only = False     # HEAD 请求：只发头部、不发正文
+
+    def handle_one_request(self) -> None:
+        """每个请求复位「请求体已读」标记。
+
+        HTTP/1.1 下同一个 Handler 实例会在一条连接上服务多个请求，故这个标记必须
+        按请求复位，不能只在 __init__ 里设一次。
+        """
+        self._body_consumed = False
+        self._head_only = False
+        super().handle_one_request()
+
+    def _drain_body(self) -> None:
+        """读掉尚未被读走的请求体。
+
+        HTTP/1.1 复用连接后，这一点是必须的：提前返回（CSRF 校验失败、参数非法等）时
+        若请求体还留在 socket 里，那些字节会被当成**下一个请求**的请求行，表现为
+        莫名其妙的 501/400，且之后整条连接全乱。原 HTTP/1.0 每请求一条连接，残留字节
+        随连接一起丢弃，所以没暴露这个问题。
+        """
+        if self._body_consumed:
+            return
+        self._body_consumed = True
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length > 0:
+            try:
+                self.rfile.read(length)
+            except (OSError, ValueError):
+                self.close_connection = True
+
     def _send_json(self, status: int, payload: dict) -> None:
+        self._drain_body()
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(body)
+        if not self._head_only:
+            self.wfile.write(body)
 
     def _ok(self, payload: dict) -> None:
         self._send_json(200, payload)
@@ -630,6 +673,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(status, payload)
 
     def _read_json_body(self) -> dict:
+        self._body_consumed = True
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0:
             return {}
@@ -678,7 +722,33 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- 静态文件 ----
 
+    @staticmethod
+    def _static_validators(st) -> Tuple[str, str]:
+        """静态资源的 (ETag, Last-Modified)。ETag 由内容身份派生：升级 exe 后资源一变，
+        标签必然跟着变，浏览器不会拿旧 JS 去跑新后端。"""
+        return '"%x-%x"' % (st.st_mtime_ns, st.st_size), formatdate(st.st_mtime, usegmt=True)
+
+    def _if_none_match(self, etag: str, mtime: float) -> bool:
+        """条件请求判定：If-None-Match 优先于 If-Modified-Since（RFC 9110 §13.1.3）。"""
+        inm = self.headers.get("If-None-Match")
+        if inm:
+            tags = [t.strip() for t in inm.split(",")]
+            return etag in tags or "*" in tags
+        ims = self.headers.get("If-Modified-Since")
+        if not ims:
+            return False
+        try:
+            since = parsedate_to_datetime(ims)
+        except (TypeError, ValueError, IndexError):
+            return False
+        if since is None:
+            return False
+        if since.tzinfo is None:  # 无时区的日期按 GMT 解释（HTTP 日期一律 GMT）
+            since = since.replace(tzinfo=timezone.utc)
+        return int(mtime) <= int(since.timestamp())
+
     def _serve_static(self, path: str) -> None:
+        self._drain_body()  # GET 一般无体；异常客户端带体时必须读掉，否则连接串位
         if path in ("/", ""):
             path = "/index.html"
         rel = path.lstrip("/")
@@ -689,6 +759,21 @@ class Handler(BaseHTTPRequestHandler):
         if not os.path.isfile(fp):
             _warn_static_missing(fp)
             self._err(404, "Not Found")
+            return
+        try:
+            st = os.stat(fp)
+        except OSError:
+            self._err(500, "读取静态资源失败")
+            return
+        etag, last_modified = self._static_validators(st)
+        # 条件请求命中：回 304 且不带正文（前端资源合计约 200KB，刷新页面时省掉整份重传）。
+        # 注：304 不带 Content-Length 是合规的（无正文），http.client 对 304 直接按 length=0 处理。
+        if self._if_none_match(etag, st.st_mtime):
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Last-Modified", last_modified)
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
             return
         ctype = {
             ".html": "text/html; charset=utf-8",
@@ -707,8 +792,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("ETag", etag)
+        self.send_header("Last-Modified", last_modified)
+        self.send_header("Cache-Control", "no-cache")  # 每次重校验（revalidate），不直接吃旧缓存
         self.end_headers()
-        self.wfile.write(body)
+        if not self._head_only:
+            self.wfile.write(body)
 
     # ---- 路由 ----
 
@@ -721,6 +810,18 @@ class Handler(BaseHTTPRequestHandler):
             self._route_api_get(path, qs)
         else:
             self._serve_static(path)
+
+    def do_HEAD(self) -> None:  # noqa: N802
+        """HEAD 与 GET 同路由，只是不写正文（`curl -I` 做探活/看状态码用得上）。
+
+        Content-Length 仍按 GET 的实际长度给出，这是 HEAD 的合规形态；正文由
+        _send_json / 静态写出点按 _head_only 跳过，故 keep-alive 下不会串位。
+        """
+        self._head_only = True
+        try:
+            self.do_GET()
+        finally:
+            self._head_only = False
 
     def do_POST(self) -> None:  # noqa: N802
         if not self._csrf_allowed():
@@ -1011,12 +1112,16 @@ class Handler(BaseHTTPRequestHandler):
             return
 
     def _api_settings_get(self) -> None:
+        # 路径以「当前生效」为准（控制器优先，settings 兜底）：用 --nginx-path/--conf-dir
+        # 启动时 controller 已有值而 settings 可能是空的，只回 settings 会让界面以为尚未
+        # 配置、把用户丢回首次向导——而这两个参数在 README 里的作用正是「跳过首次选择」。
+        ctl = self.controller
         self._ok({
-            "nginxPath": self.settings.get("nginxPath"),
-            "confDir": self.settings.get("confDir"),
+            "nginxPath": (ctl.nginx_path if ctl else None) or self.settings.get("nginxPath"),
+            "confDir": (ctl.conf_dir if ctl else None) or self.settings.get("confDir"),
             "port": int(self.settings.get("port", 0) or 0) or DEFAULT_PORT,
             "backupRetention": self.settings.get("backupRetention", BACKUP_RETENTION),
-            "configured": self.settings.configured(),
+            "configured": ctl is not None,
             "preview": Handler.controller is None,
             # manager 自身配置文件地址（数据目录）
             "dataDir": self.data_dirs["root"],
@@ -1189,6 +1294,7 @@ class Handler(BaseHTTPRequestHandler):
             abs_path = self._conf_abs(rel)
             os.makedirs(os.path.dirname(abs_path), exist_ok=True)
             atomic_write_text(abs_path, files_map[rel])
+        ctl.invalidate_config_cache()
 
         ok, result = ctl.test_config()
         if not ok:
@@ -1196,6 +1302,7 @@ class Handler(BaseHTTPRequestHandler):
             for rel, content in current_map.items():
                 abs_path = self._conf_abs(rel)
                 atomic_write_text(abs_path, content)
+            ctl.invalidate_config_cache()
             self._err(409, "回滚后 nginx -t 校验失败，已恢复原状", result.get("output", ""))
             return
         self._ok({"ok": True, "restored": staged, "test": result, "preBackupIds": pre_backup_ids})
@@ -1265,6 +1372,7 @@ class Handler(BaseHTTPRequestHandler):
         except OSError as e:
             self._err(500, f"写入文件失败: {e}")
             return
+        ctl.invalidate_config_cache()  # 配置已改：日志路径/stub_status 等派生结果必须重算
 
         if run_test:
             _ok, result = ctl.test_config()
@@ -1461,9 +1569,11 @@ class Handler(BaseHTTPRequestHandler):
             return True
         backup_id = make_backup(self.data_dirs["backups"], self.controller.conf_dir, "nginx.conf")
         pm.commit()
+        self.controller.invalidate_config_cache()  # 配置已改：派生结果必须重算
         _code, result = self.controller.test_config()
         if not result.get("ok"):
             pm.restore(original)
+            self.controller.invalidate_config_cache()  # 回滚同样改了文件
             self._send_json(409, {
                 "error": "修改后 nginx -t 校验失败，已回滚（配置未改动）",
                 "detail": result.get("output", ""),
@@ -1516,7 +1626,10 @@ class Handler(BaseHTTPRequestHandler):
             self._err(404, f"代理不存在: {path}")
             return
         targets = proxy_cur.get("targets", [])
-        hit = next((t for t in targets if _pool_key(t) == _pool_key(target)), None)
+        # 规范化口径只算一次：原实现把 _pool_key(target) 写在生成器里，每比较一个元素
+        # 都会重跑一次正则
+        want_key = _pool_key(target)
+        hit = next((t for t in targets if _pool_key(t) == want_key), None)
         if hit is not None:
             target = hit
         elif target not in targets:

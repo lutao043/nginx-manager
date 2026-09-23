@@ -129,7 +129,9 @@ class ServerFixture:
 
     # ---- 生命周期 ----
 
-    def start(self) -> "ServerFixture":
+    def start(self, write_settings: bool = True) -> "ServerFixture":
+        """启动服务。write_settings=False 用于模拟「只用 --nginx-path/--conf-dir 启动、
+        settings.json 还不存在」的首次运行。"""
         os.makedirs(self.data_dir, exist_ok=True)
         os.makedirs(self.conf_dir, exist_ok=True)
         os.makedirs(self.logs_dir, exist_ok=True)
@@ -137,8 +139,9 @@ class ServerFixture:
         self.write_conf("nginx.conf", VALID_CONF)
         self.write_conf("sites.conf", "server {\n    listen 8081;\n}\n")
         # 预置 settings：服务启动即进入正常模式（非预览），controller 指向替身
-        with open(os.path.join(self.data_dir, "settings.json"), "w", encoding="utf-8") as f:
-            json.dump({"nginxPath": self.nginx, "confDir": self.conf_dir, "backupRetention": 5}, f, indent=2)
+        if write_settings:
+            with open(os.path.join(self.data_dir, "settings.json"), "w", encoding="utf-8") as f:
+                json.dump({"nginxPath": self.nginx, "confDir": self.conf_dir, "backupRetention": 5}, f, indent=2)
 
         env = dict(os.environ)
         env["BROWSER"] = "/usr/bin/true"      # 测试中不要真的弹浏览器

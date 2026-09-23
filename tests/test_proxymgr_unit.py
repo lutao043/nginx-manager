@@ -219,6 +219,39 @@ class TestBlockBoundaries(ProxyMgrTestBase):
         content = self.read()
         self.assertLess(content.index("location /nginx_status"), content.index("stream {"))
 
+    def test_enable_stub_status_existing_location_reports_already(self):
+        """已存在同名 location 时必须返回 already=True 且一个字节都不改。
+
+        already 就是 API.md 里 POST /api/metrics/enable 的契约字段，界面据此提示
+        「已存在、未做改动」。旧实现返回自造的 unchanged 字段、没有消费方，界面于是把
+        「什么都没做」提示成「配置已写入并通过校验」。
+        """
+        self.write("""worker_processes 1;
+
+http {
+    server {
+        listen 8080;
+        location /nginx_status { stub_status; allow 127.0.0.1; deny all; }
+    }
+}
+""")
+        before = self.read()
+        m = self.mgr()
+        r = m.enable_stub_status()
+        self.assertTrue(r.get("ok"), r)
+        self.assertTrue(r.get("already"), "已存在同名 location 时必须回 already=True：%r" % (r,))
+        self.assertEqual(self.read(), before, "already 分支不得改动配置")
+        self.assertNotIn("backup", r)
+
+    def test_enable_stub_status_writes_when_absent(self):
+        """没有同名 location 时才真的写入，且不返回 already。"""
+        self.write(CONF_WITH_STREAM_LAST)
+        m = self.mgr()
+        r = m.enable_stub_status()
+        self.assertTrue(r.get("ok"), r)
+        self.assertFalse(r.get("already"), r)
+        self.assertIn("location /nginx_status", self.read() if m.content == self.read() else m.content)
+
 
 class TestDuplicateDetection(ProxyMgrTestBase):
     def test_second_add_on_fresh_instance_refused(self):

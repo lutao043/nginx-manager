@@ -382,9 +382,14 @@ class VersionConsistencyTest(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
     def test_version_not_hardcoded_outside_allowlist(self):
-        """版本号不得散落硬编码：仅允许单一来源与文档提及。"""
+        """版本号不得散落硬编码：仅允许单一来源与文档提及。
+
+        白名单里是文档（README/ROADMAP/API/发布说明/测试报告）：它们要写明被验证或被发布的
+        是哪个版本，是「提及」而不是「派生来源」；代码与脚本一律不得出现字面量。
+        """
         allow = re.compile(
             r"^(backend/server\.py|release-notes/|ROADMAP\.md|VIBE_CODING_GUIDE\.md|README.*\.md|"
+            r"RELEASE_TEST_REPORT\.md|"
             r"API\.md|AGENTS\.md|aoci[^/]*\.txt|aoci/|\.aoci/)"
         )
         skip_prefixes = (".git/", ".aoci/objects/", "dist/", "build/", "nginx-1.30.4/", "__pycache__/", ".pytest_cache/")

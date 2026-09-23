@@ -12,7 +12,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from helpers import (INVALID_DIRECTIVE, REPO_ROOT, SERVER_PY, VALID_CONF,  # noqa: E402
-                     ServerTestCase, requires_posix)
+                     ServerFixture, ServerTestCase, requires_posix)
 
 
 class StatusTest(ServerTestCase):
@@ -143,6 +143,44 @@ class ProcessStateTest(ServerTestCase):
         st, body = self.fixture.post("/api/nginx/stop")
         self.assertEqual(st, 409)
         self.assertTrue(body.get("error"))
+
+
+@requires_posix
+class CliOnlyStartupTest(unittest.TestCase):
+    """只用 --nginx-path/--conf-dir 启动（settings.json 不存在）时必须算「已配置」。
+
+    README 把这两个参数写成「跳过首次选择对话框」；若 /api/settings 只回 settings 里的值，
+    前端判定 configured=false 就会把用户丢回首次配置向导，并让两个路径输入框空着——
+    参数看起来完全没生效。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fixture = ServerFixture().start(write_settings=False)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.fixture.cleanup()
+
+    def test_settings_reports_cli_paths_and_configured(self):
+        st, body = self.fixture.get("/api/settings")
+        self.assertEqual(st, 200)
+        self.assertTrue(body["configured"], "CLI 已给出路径，configured 必须为真：%r" % (body,))
+        self.assertFalse(body["preview"])
+        self.assertEqual(body["nginxPath"], self.fixture.nginx, "路径要回「当前生效」的值")
+        self.assertEqual(body["confDir"], self.fixture.conf_dir)
+
+    def test_status_and_settings_agree_on_paths(self):
+        _st, status = self.fixture.get("/api/status")
+        _st2, settings = self.fixture.get("/api/settings")
+        self.assertEqual(status["nginxPath"], settings["nginxPath"])
+        self.assertEqual(status["confDir"], settings["confDir"])
+
+    def test_config_tree_available_without_settings_file(self):
+        """真正的判据是「能不能用」：配置树读得到，说明确实进了正常模式。"""
+        st, body = self.fixture.get("/api/config")
+        self.assertEqual(st, 200)
+        self.assertTrue(body.get("tree"), body)
 
 
 CONF_FOR_PROXY = """worker_processes  1;
