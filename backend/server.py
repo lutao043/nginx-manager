@@ -602,7 +602,7 @@ class Server(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "nginx-manager/1.0.0-rc.2"
+    server_version = "nginx-manager/1.0.0"
 
     # HTTP/1.1：默认带 keep-alive，轮询不再每次新建 TCP 连接 + 新线程（空闲时约 1.2 req/s，
     # 按 HTTP/1.0 算每天要新建约 10 万次线程）。开启前提是**每个响应都必须带准确的
