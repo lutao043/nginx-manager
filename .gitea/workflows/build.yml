@@ -74,22 +74,26 @@ jobs:
           set BUILD_ROOT=%USERPROFILE%\nginx-manager-build
           set PY_ROOT=%BUILD_ROOT%\python313
           set PY_VER=3.13.7
+          set BUNDLE=%BUILD_ROOT%\py-installer.exe
           set FORCE_REINSTALL=${{ inputs.force_python_reinstall }}
           if not exist "%BUILD_ROOT%" mkdir "%BUILD_ROOT%"
           if exist "%PY_ROOT%\python.exe" if not "%FORCE_REINSTALL%"=="true" goto :havepy
-          if exist "%PY_ROOT%" rmdir /s /q "%PY_ROOT%"
           echo [py] fetching python %PY_VER% installer ...
           for %%U in ("https://mirrors.ustc.edu.cn/python/%PY_VER%/python-%PY_VER%-amd64.exe" "https://mirrors.huaweicloud.com/python/%PY_VER%/python-%PY_VER%-amd64.exe" "https://registry.npmmirror.com/-/binary/python/%PY_VER%/python-%PY_VER%-amd64.exe" "https://www.python.org/ftp/python/%PY_VER%/python-%PY_VER%-amd64.exe") do (
-            if exist "%BUILD_ROOT%\py-installer.exe" del /q "%BUILD_ROOT%\py-installer.exe"
+            if exist "%BUNDLE%" del /q "%BUNDLE%"
             echo [py] trying %%U
-            curl -L --fail --connect-timeout 15 --max-time 600 -o "%BUILD_ROOT%\py-installer.exe" %%U
+            curl -L --fail --connect-timeout 15 --max-time 600 -o "%BUNDLE%" %%U
             if not errorlevel 1 goto :downloaded
           )
           echo [py] ERROR: all mirrors failed
           exit /b 1
           :downloaded
+          if "%FORCE_REINSTALL%"=="true" if exist "%PY_ROOT%" rmdir /s /q "%PY_ROOT%"
           echo [py] installing to %PY_ROOT% ...
-          start /wait "" "%BUILD_ROOT%\py-installer.exe" /quiet InstallAllUsers=0 TargetDir="%PY_ROOT%" Include_tcltk=1 Include_pip=1 Include_launcher=0 PrependPath=0 AssociateFiles=0 Shortcuts=0 Include_test=0 Include_doc=0 Include_dev=0
+          start /wait "" "%BUNDLE%" /quiet InstallAllUsers=0 TargetDir="%PY_ROOT%" Include_tcltk=1 Include_pip=1 Include_launcher=0 PrependPath=0 AssociateFiles=0 Shortcuts=0 Include_test=0 Include_doc=0 Include_dev=0
+          if exist "%PY_ROOT%\python.exe" goto :havepy
+          echo [py] no interpreter after install (stale MSI registration?), retrying with /repair
+          start /wait "" "%BUNDLE%" /quiet /repair InstallAllUsers=0
           if not exist "%PY_ROOT%\python.exe" (
             echo [py] ERROR: python install failed
             exit /b 1
