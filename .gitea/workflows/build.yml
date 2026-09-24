@@ -310,11 +310,14 @@ jobs:
             Write-Host "[rel] release created id=$relId url=$($rel.html_url)"
           }
 
-          # drop a same-name asset first so re-runs replace instead of failing
+          # drop same-name assets first so re-runs replace instead of piling up duplicates.
+          # ConvertFrom-Json writes the array without enumerating, so assign first: wrapping a
+          # pipeline in @() would yield ONE element holding the whole array ($a.id -> "12 13").
           $assetsFile = Join-Path $tmp 'assets.json'
           & curl.exe -s -o $assetsFile -H $auth "$api/releases/$relId/assets" | Out-Null
-          $assets = @(Get-Content -Raw -Encoding UTF8 $assetsFile | ConvertFrom-Json)
-          foreach ($a in $assets) {
+          $assetsObj = Get-Content -Raw -Encoding UTF8 $assetsFile | ConvertFrom-Json
+          $assetList = @($assetsObj)
+          foreach ($a in $assetList) {
             if ($a.name -eq $exe.Name) {
               Write-Host "[rel] removing existing asset id=$($a.id)"
               $delFile = Join-Path $tmp 'del.json'
@@ -337,4 +340,12 @@ jobs:
           }
           $up = Get-Content -Raw -Encoding UTF8 $upFile | ConvertFrom-Json
           Write-Host "[rel] OK: asset $($up.name) size=$($up.size) url=$($up.browser_download_url)"
+
+          # final check: exactly one asset with the expected name should remain
+          $checkFile = Join-Path $tmp 'check.json'
+          & curl.exe -s -o $checkFile -H $auth "$api/releases/$relId/assets" | Out-Null
+          $finalList = @(Get-Content -Raw -Encoding UTF8 $checkFile | ConvertFrom-Json)
+          $sameName = @($finalList | Where-Object { $_.name -eq $exe.Name })
+          Write-Host "[rel] assets now: $(($finalList | ForEach-Object { $_.name }) -join ', ')"
+          if ($sameName.Count -ne 1) { throw "[rel] ERROR: expected exactly 1 asset named $($exe.Name), found $($sameName.Count)" }
           Write-Host "[rel] OK: release $tag published on Gitea"
