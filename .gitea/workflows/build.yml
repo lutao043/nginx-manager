@@ -34,6 +34,9 @@ on:
       force_python_reinstall:
         description: "Force re-download/reinstall Python (default: reuse installed interpreter)"
         default: "false"
+      release_tag:
+        description: "Publish a Gitea release for this existing tag (e.g. v1.0.0); empty means build only"
+        default: ""
 
 permissions:
   contents: write
@@ -43,12 +46,16 @@ jobs:
     runs-on: windows-latest
     steps:
       # 1) 取源码：固定目录、每次全新克隆，避免残留状态
+      #    release_tag 输入用于补发已有 tag：手动 dispatch 时按该 tag 取源码（tag 推送时
+      #    不需要，GITHUB_SHA 就是 tag 指向的提交）。
       - name: Checkout (git)
         shell: cmd
         run: |
           @echo off
           set BUILD_ROOT=%USERPROFILE%\nginx-manager-build
           set SRC=%BUILD_ROOT%\src
+          set BUILD_REF=${{ inputs.release_tag }}
+          if "%BUILD_REF%"=="" set BUILD_REF=%GITHUB_SHA%
           set TOKEN=${{ secrets.GITHUB_TOKEN }}
           if "%TOKEN%"=="" set TOKEN=%GITHUB_TOKEN%
           if "%TOKEN%"=="" (
@@ -62,7 +69,7 @@ jobs:
           if errorlevel 1 exit /b 1
           cd /d "%SRC%"
           if errorlevel 1 exit /b 1
-          git checkout --force --quiet %GITHUB_SHA%
+          git checkout --force --quiet %BUILD_REF%
           if errorlevel 1 exit /b 1
           git log -1 --oneline
           git describe --tags --exact-match
@@ -172,7 +179,9 @@ jobs:
           )
           exit /b 0
 
-  # 5) 发布：仅 tag 推送时执行，建或更新 Gitea Release 并挂上 exe（与 .github 侧同语义）。
+  # 5) 发布：建或更新 Gitea Release 并挂上 exe（与 .github 侧同语义）。
+  #    tag 推送时自动发布；手动 dispatch 带 release_tag 输入时补发该已有 tag（旧 tag 的提交
+  #    里没有本工作流的新版语义，只能用当前 main 上的本文件补发）；两者都没有则直接跳过。
   #    幂等：同一 tag 重跑（rerun / 重推 tag）会更新说明并覆盖同名资产。
   #    发布说明优先取 release-notes/<tag>.md（按 UTF-8 读入），缺失时由提交记录生成并附
   #    compare 链接；预发布号（tag 含 -）标记 prerelease。全部 HTTP 走 curl，PowerShell 只做 JSON 读写。
@@ -181,13 +190,13 @@ jobs:
   #    无控制台）把它设成 UTF-8 是静默无效的——实测发布说明仍按 cp936 解成乱码。
   release:
     needs: [build-windows]
-    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     steps:
       - name: Publish Gitea Release
         shell: powershell
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REL_TAG: ${{ inputs.release_tag }}
         run: |
           $ErrorActionPreference = 'Stop'
 
@@ -206,10 +215,18 @@ jobs:
             return $out
           }
 
+          $tag = $env:REL_TAG
+          if (-not $tag) {
+            if (-not $env:GITHUB_REF.StartsWith('refs/tags/')) {
+              Write-Host '[rel] skip: manual run without release_tag input'
+              exit 0
+            }
+            $tag = $env:GITHUB_REF_NAME
+          }
+
           $root   = Join-Path $env:USERPROFILE 'nginx-manager-build'
           $src    = Join-Path $root 'src'
           $dist   = Join-Path $root 'dist'
-          $tag    = $env:GITHUB_REF_NAME
           $repo   = $env:GITHUB_REPOSITORY
           $api    = "$($env:GITHUB_SERVER_URL)/api/v1/repos/$repo"
           $auth   = "Authorization: token $($env:GH_TOKEN)"
@@ -218,8 +235,13 @@ jobs:
           New-Item -ItemType Directory -Path $tmp | Out-Null
           Write-Host "[rel] tag=$tag repo=$repo"
 
-          $exe = Get-ChildItem (Join-Path $dist 'nginx-manager-v*.exe') | Select-Object -First 1
-          if (-not $exe) { throw "[rel] ERROR: no exe found in $dist" }
+          $exeName = "nginx-manager-$tag.exe"
+          $exe = Get-ChildItem (Join-Path $dist $exeName) -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) {
+            $exe = Get-ChildItem (Join-Path $dist 'nginx-manager-v*.exe') | Select-Object -First 1
+            if (-not $exe) { throw "[rel] ERROR: no exe found in $dist" }
+            Write-Host "[rel] warn: $exeName not found, using $($exe.Name)"
+          }
           Write-Host "[rel] asset=$($exe.Name) size=$($exe.Length)"
 
           # release notes: repo notes file first, else generated from the commit log
