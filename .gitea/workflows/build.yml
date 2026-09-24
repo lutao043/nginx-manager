@@ -102,7 +102,7 @@ jobs:
           "%BUNDLE%" /quiet InstallAllUsers=0 TargetDir="%PY_ROOT%" Include_tcltk=1 Include_pip=1 Include_launcher=0 PrependPath=0 AssociateFiles=0 Shortcuts=0 Include_test=0 Include_doc=0 Include_dev=0
           echo [py] installer exit=%errorlevel%
           if not exist "%PY_ROOT%\python.exe" (
-            echo [py] no interpreter after install (stale MSI registration?), retrying with /repair
+            echo [py] no python.exe after install: stale MSI registration, retrying with /repair
             "%BUNDLE%" /quiet /repair InstallAllUsers=0
           )
           "%PY_ROOT%\python.exe" -c "print('PYOK')" >"%PROBE%" 2>&1
