@@ -187,6 +187,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = 'Stop'
+          # PS 5.1 用 [Console]::OutputEncoding 解码原生命令输出（中文 Windows 默认 cp936），
+          # 不改就会把 git log 的 UTF-8 提交信息解成乱码再写进发布说明。
+          try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { Write-Host '[rel] warn: cannot set console output encoding' }
           $root   = Join-Path $env:USERPROFILE 'nginx-manager-build'
           $src    = Join-Path $root 'src'
           $dist   = Join-Path $root 'dist'
