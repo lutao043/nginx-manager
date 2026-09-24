@@ -62,6 +62,7 @@ jobs:
           exit /b 0
 
       # 2) Python 3.13（含 tcl/tk：界面与 PyInstaller 都依赖）：装到用户目录，仅首次下载安装
+      #    安装包按国内镜像优先的顺序取（python.org 直连实测约 30KB/s，27.5MB 要十几分钟）
       - name: Prepare Python
         shell: cmd
         run: |
@@ -69,11 +70,18 @@ jobs:
           set BUILD_ROOT=%USERPROFILE%\nginx-manager-build
           set PY_ROOT=%BUILD_ROOT%\python313
           set PY_VER=3.13.7
-          if exist "%PY_ROOT%\python.exe" goto :havepy
           if not exist "%BUILD_ROOT%" mkdir "%BUILD_ROOT%"
-          echo [py] downloading python %PY_VER% ...
-          curl -L --fail --retry 3 -o "%BUILD_ROOT%\py-installer.exe" "https://www.python.org/ftp/python/%PY_VER%/python-%PY_VER%-amd64.exe"
-          if errorlevel 1 exit /b 1
+          if exist "%PY_ROOT%\python.exe" goto :havepy
+          echo [py] fetching python %PY_VER% installer ...
+          for %%U in ("https://mirrors.ustc.edu.cn/python/%PY_VER%/python-%PY_VER%-amd64.exe" "https://mirrors.huaweicloud.com/python/%PY_VER%/python-%PY_VER%-amd64.exe" "https://registry.npmmirror.com/-/binary/python/%PY_VER%/python-%PY_VER%-amd64.exe" "https://www.python.org/ftp/python/%PY_VER%/python-%PY_VER%-amd64.exe") do (
+            if exist "%BUILD_ROOT%\py-installer.exe" del /q "%BUILD_ROOT%\py-installer.exe"
+            echo [py] trying %%U
+            curl -L --fail --connect-timeout 15 --max-time 600 -o "%BUILD_ROOT%\py-installer.exe" %%U
+            if not errorlevel 1 goto :downloaded
+          )
+          echo [py] ERROR: all mirrors failed
+          exit /b 1
+          :downloaded
           echo [py] installing to %PY_ROOT% ...
           start /wait "" "%BUILD_ROOT%\py-installer.exe" /quiet InstallAllUsers=0 TargetDir="%PY_ROOT%" Include_tcltk=1 Include_pip=1 Include_launcher=0 PrependPath=0 AssociateFiles=0 Shortcuts=0 Include_test=0 Include_doc=0 Include_dev=0
           if not exist "%PY_ROOT%\python.exe" (
@@ -88,6 +96,7 @@ jobs:
           exit /b 0
 
       # 3) 打包：build.py 自动生成 version_info.py 并调 PyInstaller（版本号取自 backend/server.py）
+      #    PyInstaller 先走清华镜像（快），失败再退回官方源
       - name: Build exe (PyInstaller)
         shell: cmd
         run: |
@@ -96,7 +105,11 @@ jobs:
           set PY_ROOT=%BUILD_ROOT%\python313
           cd /d "%BUILD_ROOT%\src"
           if errorlevel 1 exit /b 1
-          "%PY_ROOT%\python.exe" -m pip install --quiet --disable-pip-version-check pyinstaller
+          "%PY_ROOT%\python.exe" -m pip install --quiet --disable-pip-version-check --timeout 60 -i https://pypi.tuna.tsinghua.edu.cn/simple pyinstaller
+          if errorlevel 1 (
+            echo [build] mirror index failed, retry on official pypi
+            "%PY_ROOT%\python.exe" -m pip install --quiet --disable-pip-version-check --timeout 60 pyinstaller
+          )
           if errorlevel 1 exit /b 1
           "%PY_ROOT%\python.exe" build.py
           if errorlevel 1 exit /b 1
