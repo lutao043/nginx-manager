@@ -2,10 +2,9 @@
 # 触发：任意分支推送与 PR（tag 推送交给 build.yml 发布，不在这里重复跑）
 # 与 .github/workflows/tests.yml 保持一致
 #
-# ⚠ 本仓库所在的自建 Gitea 实例未配置 Actions runner（2026-09-22 由用户确认），
-#   因此本工作流不会实际执行，不构成门禁。实际执行的测试门禁与发布流水线都在
-#   GitHub Actions（.github/workflows/）。保留本文件是为了两处配置镜像一致，
-#   将来该实例配上 runner 即可直接生效。
+# 2026-09-24：本实例已注册 wsl-runner（ubuntu-latest）与 win-runner（windows-latest），
+#   本工作流推送后真实执行，不再是镜像占位。测试只跑 Linux（后端测试用 POSIX nginx
+#   替身），Windows 侧只负责打包（见 build.yml）。
 
 name: Tests
 

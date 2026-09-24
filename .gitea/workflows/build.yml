@@ -1,11 +1,11 @@
-# Gitea Actions — 自动构建多平台 Release
-# 触发：push tag（格式 v*.*.*）
-# 平台：macOS (arm64) + Windows (amd64)
+# Gitea Actions — Windows 打包（单平台）
+# 触发：push tag（格式 v*.*.*）→ 打包并建 Release；workflow_dispatch → 只打包试跑
 #
-# ⚠ 本仓库所在的自建 Gitea 实例未配置 Actions runner（2026-09-22 由用户确认），
-#   因此本工作流不会实际执行，不会产出 Release。发布产物实际由 GitHub Actions
-#   构建（.github/workflows/build.yml → GitHub Release）。保留本文件是为了两处
-#   配置镜像一致，将来该实例配上 runner 即可直接生效。
+# 平台决策（2026-09-24，用户确认）：本实例 runner 为 win-runner（windows-latest）与
+#   wsl-runner（ubuntu-latest），当前只需要 Windows 产物，故移除 macOS 构建任务。
+#   Release 仅在 tag 推送时创建，手动试跑不会污染 Release 页。
+#
+# 产物：dist/nginx-manager-v{版本}.exe，Artifact 名 nginx-manager-windows
 
 name: Build & Release
 
@@ -13,26 +13,12 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  build-macos:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - run: pip install pyinstaller
-      - run: python build.py
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: nginx-manager-macos
-          path: dist/nginx-manager-v*  # 不带扩展名（macOS/Linux）
-
   build-windows:
     runs-on: windows-latest
     steps:
@@ -48,14 +34,19 @@ jobs:
           name: nginx-manager-windows
           path: dist/nginx-manager-v*.exe
 
+  # 仅 tag 推送发布；workflow_dispatch 试跑时本任务跳过
   release:
-    needs: [build-macos, build-windows]
+    needs: [build-windows]
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0  # 生成发布说明需要完整历史与 tag
       - uses: actions/download-artifact@v4
+        with:
+          name: nginx-manager-windows
+          path: ./windows
       - name: Prepare release notes
         run: |
           TAG="${{ github.ref_name }}"
@@ -75,7 +66,5 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            nginx-manager-macos/nginx-manager-v*
-            nginx-manager-windows/nginx-manager-v*.exe
+          files: windows/nginx-manager-v*.exe
           body_path: RELEASE_NOTES.md
