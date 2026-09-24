@@ -263,11 +263,30 @@ jobs:
             Write-Host "[rel] notes generated from commit log (prev=$prev)"
           }
           if (-not $notes) { $notes = 'see commit log' }
+          Write-Host "[rel] notes type=$($notes.GetType().Name) chars=$($notes.Length)"
 
-          $isPre = $tag.Contains('-')
-          $payload = @{ tag_name = $tag; name = "nginx-manager $tag"; body = $notes; draft = $false; prerelease = $isPre } | ConvertTo-Json -Depth 4
-          $payloadFile = Join-Path $tmp 'payload.json'
-          [System.IO.File]::WriteAllText($payloadFile, $payload, (New-Object System.Text.UTF8Encoding($false)))
+          # payload via the runner's own Python: json.dump keeps the markdown body a JSON string
+          $py = Join-Path $root 'python313\python.exe'
+          if (-not (Test-Path $py)) { throw "[rel] ERROR: python not found at $py" }
+          $notesFile = Join-Path $tmp 'notes.md'
+          [System.IO.File]::WriteAllText($notesFile, $notes, (New-Object System.Text.UTF8Encoding($false)))
+          $pyScript = Join-Path $tmp 'mkpayload.py'
+          @'
+          import json, sys
+          notes_path, tag, create_path, edit_path = sys.argv[1:5]
+          body = open(notes_path, encoding='utf-8').read()
+          create = {"tag_name": tag, "name": "nginx-manager " + tag, "body": body, "draft": False, "prerelease": "-" in tag}
+          edit = {"name": create["name"], "body": body, "draft": False, "prerelease": create["prerelease"]}
+          json.dump(create, open(create_path, 'w', encoding='utf-8'), ensure_ascii=False)
+          json.dump(edit, open(edit_path, 'w', encoding='utf-8'), ensure_ascii=False)
+          print('[rel] payload bytes:', len(json.dumps(create, ensure_ascii=False)))
+          '@ | Set-Content -Encoding ASCII $pyScript
+          $payloadFile = Join-Path $tmp 'create.json'
+          $editFile = Join-Path $tmp 'edit.json'
+          & $py $pyScript $notesFile $tag $payloadFile $editFile
+          if ($LASTEXITCODE -ne 0) { throw "[rel] ERROR: payload generation failed" }
+          $raw = Get-Content -Raw -Encoding UTF8 $payloadFile
+          Write-Host "[rel] payload head: $($raw.Substring(0, [Math]::Min(110, $raw.Length)))"
 
           # create or update the release
           $respFile = Join-Path $tmp 'resp.json'
@@ -275,7 +294,7 @@ jobs:
           $code = "$code".Trim()
           if ($code -eq '200') {
             $relId = (Get-Content -Raw -Encoding UTF8 $respFile | ConvertFrom-Json).id
-            $code2 = & curl.exe -s -o $respFile -w '%{http_code}' -X PATCH -H $auth -H 'Content-Type: application/json' --data-binary "@$payloadFile" "$api/releases/$relId"
+            $code2 = & curl.exe -s -o $respFile -w '%{http_code}' -X PATCH -H $auth -H 'Content-Type: application/json' --data-binary "@$editFile" "$api/releases/$relId"
             $code2 = "$code2".Trim()
             if ($code2 -ne '200') { throw "[rel] ERROR: update release failed http=$code2" }
             Write-Host "[rel] release updated id=$relId"
