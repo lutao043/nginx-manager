@@ -26,6 +26,10 @@ on:
     tags:
       - "v*.*.*"
   workflow_dispatch:
+    inputs:
+      force_python_reinstall:
+        description: "Force re-download/reinstall Python (default: reuse installed interpreter)"
+        default: "false"
 
 permissions:
   contents: read
@@ -70,8 +74,10 @@ jobs:
           set BUILD_ROOT=%USERPROFILE%\nginx-manager-build
           set PY_ROOT=%BUILD_ROOT%\python313
           set PY_VER=3.13.7
+          set FORCE_REINSTALL=${{ inputs.force_python_reinstall }}
           if not exist "%BUILD_ROOT%" mkdir "%BUILD_ROOT%"
-          if exist "%PY_ROOT%\python.exe" goto :havepy
+          if exist "%PY_ROOT%\python.exe" if not "%FORCE_REINSTALL%"=="true" goto :havepy
+          if exist "%PY_ROOT%" rmdir /s /q "%PY_ROOT%"
           echo [py] fetching python %PY_VER% installer ...
           for %%U in ("https://mirrors.ustc.edu.cn/python/%PY_VER%/python-%PY_VER%-amd64.exe" "https://mirrors.huaweicloud.com/python/%PY_VER%/python-%PY_VER%-amd64.exe" "https://registry.npmmirror.com/-/binary/python/%PY_VER%/python-%PY_VER%-amd64.exe" "https://www.python.org/ftp/python/%PY_VER%/python-%PY_VER%-amd64.exe") do (
             if exist "%BUILD_ROOT%\py-installer.exe" del /q "%BUILD_ROOT%\py-installer.exe"
