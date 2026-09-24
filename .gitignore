@@ -34,5 +34,5 @@ version_info.py
 .codex/config.toml
 .codex/config.toml.backup.*
 
-# 宿主会话产物（plan mode 的计划文件等；每次会话生成，不属于仓库内容）
-.zcode/plans/
+# 宿主会话与工作区接入内容（机器绑定：MCP 配置里是本机绝对路径；计划文件每次会话生成）
+.zcode/

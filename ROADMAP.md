@@ -232,7 +232,7 @@ python3 scripts/bench_hotpath.py --json     # 机器可读（第二节实测值�
 
 ### B1 接入现状（已完成）
 
-aoci 二进制：`/Users/lutao/.local/bin/aoci`（`aoci version 0.1.0-rc12`，布局 `volumes-v1`，MCP 工具 9 个）。
+aoci 二进制：`~/.local/bin/aoci`（`aoci version 0.1.0-rc12`，布局 `volumes-v1`，MCP 工具 9 个；二进制与三个宿主的项目级配置都是**机器绑定**的，不入库——`.mcp.json`、`.codex/config.toml`、`.zcode/` 均在 `.gitignore` 里）。
 
 | 宿主 | 配置文件 | 状态 |
 |---|---|---|
