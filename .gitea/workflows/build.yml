@@ -5,12 +5,17 @@
 #   win-runner 以「宿主模式」运行（Windows 上无 Docker），而该主机上没有 Node.js，
 #   所有 JS action 在任务准备阶段即失败：`Cannot find: node in PATH`（2026-09-24
 #   实测，见 run #25 的 build-windows 日志）。同一主机上 Python 也未安装（只有
-#   Microsoft Store 的占位别名）。故本工作流只用宿主已有的 git / curl / cmd：
+#   Microsoft Store 的占位别名），git 2.55、curl、PowerShell 5.1 在位。
+#   故本工作流只用宿主已有的 git / curl / cmd：
 #   取源码用 git（私有仓库带临时 token），Python 用 python.org 官方安装包静默装到
 #   用户目录（不改系统 PATH、不要管理员、不建快捷方式），产物复制到固定目录并打印 SHA-256。
 #
 # 若要改回标准 action 写法：先在 runner 主机安装 Node.js LTS（winget install
 #   OpenJS.NodeJS.LTS）并重启 runner 服务，再恢复 actions/checkout 等步骤。
+#
+# ⚠ 本文件所有 run: 脚本必须保持纯 ASCII：runner 把脚本章节按 UTF-8 落盘，而 cmd 按
+#   本地代码页（cp936）解析，中文字节会吃掉后续字符（实测报错碎片 `'OKEN' not ...`、
+#   token 被当成命令执行），整段脚本解析崩坏。中文说明一律写在 YAML 注释里。
 #
 # 产物：%USERPROFILE%\nginx-manager-build\dist\nginx-manager-v{版本}.exe
 
@@ -38,49 +43,66 @@ jobs:
           set SRC=%BUILD_ROOT%\src
           set TOKEN=${{ secrets.GITHUB_TOKEN }}
           if "%TOKEN%"=="" set TOKEN=%GITHUB_TOKEN%
-          if "%TOKEN%"=="" (echo [git] 没有可用的 GITHUB_TOKEN，私有仓库无法克隆 & exit /b 1)
+          if "%TOKEN%"=="" (
+            echo [git] ERROR: no GITHUB_TOKEN available, cannot clone private repo
+            exit /b 1
+          )
           if not exist "%BUILD_ROOT%" mkdir "%BUILD_ROOT%"
           if exist "%SRC%\.git" rmdir /s /q "%SRC%"
           set HOST=%GITHUB_SERVER_URL:http://=%
-          git clone --quiet "http://lutao:%TOKEN%@%HOST%/%GITHUB_REPOSITORY%.git" "%SRC%" || exit /b 1
-          cd /d "%SRC%" || exit /b 1
-          git checkout --force --quiet %GITHUB_SHA% || exit /b 1
-          echo [git] HEAD:
+          git clone --quiet "http://lutao:%TOKEN%@%HOST%/%GITHUB_REPOSITORY%.git" "%SRC%"
+          if errorlevel 1 exit /b 1
+          cd /d "%SRC%"
+          if errorlevel 1 exit /b 1
+          git checkout --force --quiet %GITHUB_SHA%
+          if errorlevel 1 exit /b 1
           git log -1 --oneline
-          git describe --tags --exact-match 2>nul || echo [git] 非 tag 构建（手动试跑）
+          git describe --tags --exact-match
+          if errorlevel 1 echo [git] not a tag build (manual run)
+          exit /b 0
 
-      # 2) 准备 Python 3.13（带 tcl/tk，PyInstaller 与界面都依赖）：装到用户目录，仅首次下载
-      - name: Prepare Python 3.13
+      # 2) Python 3.13（含 tcl/tk：界面与 PyInstaller 都依赖）：装到用户目录，仅首次下载安装
+      - name: Prepare Python
         shell: cmd
         run: |
           @echo off
           set BUILD_ROOT=%USERPROFILE%\nginx-manager-build
           set PY_ROOT=%BUILD_ROOT%\python313
           set PY_VER=3.13.7
-          if exist "%PY_ROOT%\python.exe" (
-            echo [py] 复用已有解释器 %PY_ROOT%
-          ) else (
-            echo [py] 下载 Python %PY_VER% 官方安装包
-            curl -L --fail --retry 3 -o "%BUILD_ROOT%\py-installer.exe" "https://www.python.org/ftp/python/%PY_VER%/python-%PY_VER%-amd64.exe" || exit /b 1
-            echo [py] 静默安装（用户级、不改 PATH、无快捷方式、含 tcl/tk 与 pip）
-            start /wait "" "%BUILD_ROOT%\py-installer.exe" /quiet InstallAllUsers=0 TargetDir="%PY_ROOT%" Include_tcltk=1 Include_pip=1 Include_launcher=0 PrependPath=0 AssociateFiles=0 Shortcuts=0 Include_test=0
-            if not exist "%PY_ROOT%\python.exe" (echo [py] 安装失败 & exit /b 1)
+          if exist "%PY_ROOT%\python.exe" goto :havepy
+          if not exist "%BUILD_ROOT%" mkdir "%BUILD_ROOT%"
+          echo [py] downloading python %PY_VER% ...
+          curl -L --fail --retry 3 -o "%BUILD_ROOT%\py-installer.exe" "https://www.python.org/ftp/python/%PY_VER%/python-%PY_VER%-amd64.exe"
+          if errorlevel 1 exit /b 1
+          echo [py] installing to %PY_ROOT% ...
+          start /wait "" "%BUILD_ROOT%\py-installer.exe" /quiet InstallAllUsers=0 TargetDir="%PY_ROOT%" Include_tcltk=1 Include_pip=1 Include_launcher=0 PrependPath=0 AssociateFiles=0 Shortcuts=0 Include_test=0 Include_doc=0 Include_dev=0
+          if not exist "%PY_ROOT%\python.exe" (
+            echo [py] ERROR: python install failed
+            exit /b 1
           )
-          "%PY_ROOT%\python.exe" --version || exit /b 1
-          "%PY_ROOT%\python.exe" -c "import tkinter;print('[py] tkinter OK', tkinter.TkVersion)" || exit /b 1
+          :havepy
+          "%PY_ROOT%\python.exe" --version
+          if errorlevel 1 exit /b 1
+          "%PY_ROOT%\python.exe" -c "import tkinter;print('[py] tkinter', tkinter.TkVersion)"
+          if errorlevel 1 exit /b 1
+          exit /b 0
 
-      # 3) 打包（build.py 自动生成 version_info.py 并调 PyInstaller，版本号取自 backend/server.py）
+      # 3) 打包：build.py 自动生成 version_info.py 并调 PyInstaller（版本号取自 backend/server.py）
       - name: Build exe (PyInstaller)
         shell: cmd
         run: |
           @echo off
           set BUILD_ROOT=%USERPROFILE%\nginx-manager-build
           set PY_ROOT=%BUILD_ROOT%\python313
-          cd /d "%BUILD_ROOT%\src" || exit /b 1
-          "%PY_ROOT%\python.exe" -m pip install --quiet --disable-pip-version-check pyinstaller || exit /b 1
-          "%PY_ROOT%\python.exe" build.py || exit /b 1
+          cd /d "%BUILD_ROOT%\src"
+          if errorlevel 1 exit /b 1
+          "%PY_ROOT%\python.exe" -m pip install --quiet --disable-pip-version-check pyinstaller
+          if errorlevel 1 exit /b 1
+          "%PY_ROOT%\python.exe" build.py
+          if errorlevel 1 exit /b 1
+          exit /b 0
 
-      # 4) 产物落固定目录并打印校验信息（exe 留在 runner 主机，便于直接取用）
+      # 4) 产物落固定目录并打印大小与 SHA-256（exe 留在 runner 主机，便于直接取用）
       - name: Collect artifact
         shell: cmd
         run: |
@@ -88,9 +110,14 @@ jobs:
           set BUILD_ROOT=%USERPROFILE%\nginx-manager-build
           set DEST=%BUILD_ROOT%\dist
           if not exist "%DEST%" mkdir "%DEST%"
-          copy /y "%BUILD_ROOT%\src\dist\nginx-manager-v*.exe" "%DEST%\" >nul || (echo [out] 未找到打包产物 & exit /b 1)
-          for %%F in ("%DEST%\nginx-manager-v*.exe") do (
-            echo [out] 产物: %%F
-            echo [out] 大小: %%~zF 字节
-            certutil -hashfile "%%F" SHA256 | findstr /r /v "hash"
+          copy /y "%BUILD_ROOT%\src\dist\nginx-manager-v*.exe" "%DEST%\" >nul
+          if errorlevel 1 (
+            echo [out] ERROR: no exe produced
+            exit /b 1
           )
+          for %%F in ("%DEST%\nginx-manager-v*.exe") do (
+            echo [out] file: %%F
+            echo [out] size: %%~zF bytes
+            certutil -hashfile "%%F" SHA256
+          )
+          exit /b 0
