@@ -1,13 +1,20 @@
 # Gitea Actions — Windows 打包（单平台）
-# 触发：push tag（格式 v*.*.*）→ 打包并建 Release；workflow_dispatch → 只打包试跑
+# 触发：push tag（格式 v*.*.*）或手动 workflow_dispatch（Actions 页面 / API）
 #
-# 平台决策（2026-09-24，用户确认）：本实例 runner 为 win-runner（windows-latest）与
-#   wsl-runner（ubuntu-latest），当前只需要 Windows 产物，故移除 macOS 构建任务。
-#   Release 仅在 tag 推送时创建，手动试跑不会污染 Release 页。
+# 为什么不用 actions/checkout | setup-python | upload-artifact：
+#   win-runner 以「宿主模式」运行（Windows 上无 Docker），而该主机上没有 Node.js，
+#   所有 JS action 在任务准备阶段即失败：`Cannot find: node in PATH`（2026-09-24
+#   实测，见 run #25 的 build-windows 日志）。同一主机上 Python 也未安装（只有
+#   Microsoft Store 的占位别名）。故本工作流只用宿主已有的 git / curl / cmd：
+#   取源码用 git（私有仓库带临时 token），Python 用 python.org 官方安装包静默装到
+#   用户目录（不改系统 PATH、不要管理员、不建快捷方式），产物复制到固定目录并打印 SHA-256。
 #
-# 产物：dist/nginx-manager-v{版本}.exe，Artifact 名 nginx-manager-windows
+# 若要改回标准 action 写法：先在 runner 主机安装 Node.js LTS（winget install
+#   OpenJS.NodeJS.LTS）并重启 runner 服务，再恢复 actions/checkout 等步骤。
+#
+# 产物：%USERPROFILE%\nginx-manager-build\dist\nginx-manager-v{版本}.exe
 
-name: Build & Release
+name: Build Windows
 
 on:
   push:
@@ -16,55 +23,74 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - run: pip install pyinstaller
-      - run: python build.py
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: nginx-manager-windows
-          path: dist/nginx-manager-v*.exe
-
-  # 仅 tag 推送发布；workflow_dispatch 试跑时本任务跳过
-  release:
-    needs: [build-windows]
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # 生成发布说明需要完整历史与 tag
-      - uses: actions/download-artifact@v4
-        with:
-          name: nginx-manager-windows
-          path: ./windows
-      - name: Prepare release notes
+      # 1) 取源码：固定目录、每次全新克隆，避免残留状态
+      - name: Checkout (git)
+        shell: cmd
         run: |
-          TAG="${{ github.ref_name }}"
-          if [ -f "release-notes/$TAG.md" ]; then
-            # 优先使用仓库内维护的版本说明（release-notes/<tag>.md）
-            cp "release-notes/$TAG.md" RELEASE_NOTES.md
-          else
-            # 缺说明文件时回退：由提交记录生成（剔除 release: 提交）
-            PREV=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
-            if [ -n "$PREV" ]; then
-              git log "$PREV..$TAG" --no-merges --pretty=format:'- %s' | grep -v '^- release: ' > RELEASE_NOTES.md || true
-            else
-              git log "$TAG" --no-merges --pretty=format:'- %s' > RELEASE_NOTES.md
-            fi
-          fi
-          [ -s RELEASE_NOTES.md ] || echo "见提交记录" > RELEASE_NOTES.md
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: windows/nginx-manager-v*.exe
-          body_path: RELEASE_NOTES.md
+          @echo off
+          set BUILD_ROOT=%USERPROFILE%\nginx-manager-build
+          set SRC=%BUILD_ROOT%\src
+          set TOKEN=${{ secrets.GITHUB_TOKEN }}
+          if "%TOKEN%"=="" set TOKEN=%GITHUB_TOKEN%
+          if "%TOKEN%"=="" (echo [git] 没有可用的 GITHUB_TOKEN，私有仓库无法克隆 & exit /b 1)
+          if not exist "%BUILD_ROOT%" mkdir "%BUILD_ROOT%"
+          if exist "%SRC%\.git" rmdir /s /q "%SRC%"
+          set HOST=%GITHUB_SERVER_URL:http://=%
+          git clone --quiet "http://lutao:%TOKEN%@%HOST%/%GITHUB_REPOSITORY%.git" "%SRC%" || exit /b 1
+          cd /d "%SRC%" || exit /b 1
+          git checkout --force --quiet %GITHUB_SHA% || exit /b 1
+          echo [git] HEAD:
+          git log -1 --oneline
+          git describe --tags --exact-match 2>nul || echo [git] 非 tag 构建（手动试跑）
+
+      # 2) 准备 Python 3.13（带 tcl/tk，PyInstaller 与界面都依赖）：装到用户目录，仅首次下载
+      - name: Prepare Python 3.13
+        shell: cmd
+        run: |
+          @echo off
+          set BUILD_ROOT=%USERPROFILE%\nginx-manager-build
+          set PY_ROOT=%BUILD_ROOT%\python313
+          set PY_VER=3.13.7
+          if exist "%PY_ROOT%\python.exe" (
+            echo [py] 复用已有解释器 %PY_ROOT%
+          ) else (
+            echo [py] 下载 Python %PY_VER% 官方安装包
+            curl -L --fail --retry 3 -o "%BUILD_ROOT%\py-installer.exe" "https://www.python.org/ftp/python/%PY_VER%/python-%PY_VER%-amd64.exe" || exit /b 1
+            echo [py] 静默安装（用户级、不改 PATH、无快捷方式、含 tcl/tk 与 pip）
+            start /wait "" "%BUILD_ROOT%\py-installer.exe" /quiet InstallAllUsers=0 TargetDir="%PY_ROOT%" Include_tcltk=1 Include_pip=1 Include_launcher=0 PrependPath=0 AssociateFiles=0 Shortcuts=0 Include_test=0
+            if not exist "%PY_ROOT%\python.exe" (echo [py] 安装失败 & exit /b 1)
+          )
+          "%PY_ROOT%\python.exe" --version || exit /b 1
+          "%PY_ROOT%\python.exe" -c "import tkinter;print('[py] tkinter OK', tkinter.TkVersion)" || exit /b 1
+
+      # 3) 打包（build.py 自动生成 version_info.py 并调 PyInstaller，版本号取自 backend/server.py）
+      - name: Build exe (PyInstaller)
+        shell: cmd
+        run: |
+          @echo off
+          set BUILD_ROOT=%USERPROFILE%\nginx-manager-build
+          set PY_ROOT=%BUILD_ROOT%\python313
+          cd /d "%BUILD_ROOT%\src" || exit /b 1
+          "%PY_ROOT%\python.exe" -m pip install --quiet --disable-pip-version-check pyinstaller || exit /b 1
+          "%PY_ROOT%\python.exe" build.py || exit /b 1
+
+      # 4) 产物落固定目录并打印校验信息（exe 留在 runner 主机，便于直接取用）
+      - name: Collect artifact
+        shell: cmd
+        run: |
+          @echo off
+          set BUILD_ROOT=%USERPROFILE%\nginx-manager-build
+          set DEST=%BUILD_ROOT%\dist
+          if not exist "%DEST%" mkdir "%DEST%"
+          copy /y "%BUILD_ROOT%\src\dist\nginx-manager-v*.exe" "%DEST%\" >nul || (echo [out] 未找到打包产物 & exit /b 1)
+          for %%F in ("%DEST%\nginx-manager-v*.exe") do (
+            echo [out] 产物: %%F
+            echo [out] 大小: %%~zF 字节
+            certutil -hashfile "%%F" SHA256 | findstr /r /v "hash"
+          )
