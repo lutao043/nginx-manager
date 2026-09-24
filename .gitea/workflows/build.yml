@@ -228,7 +228,8 @@ jobs:
             $notes = Get-Content -Raw -Encoding UTF8 $notesPath
             Write-Host "[rel] notes from release-notes/$tag.md"
           } else {
-            $prev = (Get-GitText $src @('describe','--tags','--abbrev=0',"$tag^") | Where-Object { $_ } | Select-Object -First 1)
+            $prevText = Get-GitText $src @('describe','--tags','--abbrev=0',"$tag^")
+            $prev = ($prevText -split "`r?`n" | Where-Object { $_ } | Select-Object -First 1)
             if ($prev) {
               $logText = Get-GitText $src @('log',"$prev..$tag",'--no-merges','--pretty=format:- %s')
               $lines = ($logText -split "`r?`n") | Where-Object { $_ -and ($_ -notlike '- release: *') }
