@@ -142,7 +142,7 @@
 4. **实测速度**：Python 安装包走国内镜像 3 秒（27.5MB，约 7.5MB/s；python.org 直连约 30KB/s、要十几分钟，故镜像优先、官方兜底）；PyInstaller 走清华 PyPI 镜像。
 5. **踩到并已修的四个坑（结论写进工作流注释）**：① **cmd 步骤必须纯 ASCII**——runner 按 UTF-8 写脚本、cmd 按本地代码页（cp936）读，中文字节会吃掉后续字符（实测 `'OKEN' not recognized`、token 被当命令执行）；② **括号块内的 echo 文案不能带圆括号**——`)` 会提前闭合 `if (...)`，cmd 报「此时不应有 xxx」并以 255 中断；③ **残缺解释器会伪装成成功**——缺 DLL 的 `python.exe` 退出码 `0xC0000135`，`if errorlevel 1` 按负数判定为「未失败」，且加载器报错不经进程 stdout/stderr，步骤表现为「零输出 + 成功」，直到产物步骤才以 `no exe produced` 暴露；现于复用前用 `python -c "print('PYOK')"` + `findstr` 校验，不可运行即删目录重装；④ **同版本重装会被 MSI 注册项拦成空目录**——删掉目标目录后静默安装走「维护/无操作」不落文件，需接 `/repair`（实测能恢复解释器与 tkinter；repair 后 pip 需 `ensurepip` 自举，已装回 pip 25.2）。
 6. **一个容易误判的现象**：PyInstaller 产物字节数每轮略有差异（11,303,704 / 11,304,225 / 11,304,439），是嵌入时间戳所致，不代表构建不稳定。
-7. **未做/未验证**：Gitea 侧 Release 发布与 Artifact 上传（前者需 node 或自建 curl 上传，后者本身是 JS action）留待装上 Node.js 后恢复标准写法；`tests.yml` 在 Gitea 侧**20 次运行全部卡在 queued**——`ubuntu-latest` 没被 `wsl-runner` 接单（该 runner 在 Gitea 显示在线，属 runner 侧配置，通常是改标签后未重启 agent），故 Gitea 侧测试门禁尚未生效，GitHub 的 `Tests` 仍是实际门禁。
+7. **未做/未验证**：Gitea 侧的 Artifact 上传（`actions/upload-artifact` 本身是 JS action）留待装上 Node.js 后恢复标准写法；Release 发布见下方「发布接线记录」；`tests.yml` 在 Gitea 侧**20 次运行全部卡在 queued**——`ubuntu-latest` 没被 `wsl-runner` 接单（该 runner 在 Gitea 显示在线，属 runner 侧配置，通常是改标签后未重启 agent），故 Gitea 侧测试门禁尚未生效，GitHub 的 `Tests` 仍是实际门禁。
 8. **操作入口**：手动试跑不改任何发布物——
 
    ```bash
@@ -152,6 +152,16 @@
    # 强制重装解释器：-d '{"ref":"main","inputs":{"force_python_reinstall":"true"}}'
    # 查运行与取日志：GET .../actions/runs/{id}、GET .../actions/jobs/{job_id}/logs
    ```
+
+
+**发布接线记录（2026-09-24，用户指令「接上发布版本一起 做到gitea和github一样」）**：Gitea 侧现在与 GitHub 一样——推 tag 即自动建/更新 Release 并挂上 exe。**结果：v1.0.0、v1.0.0-rc.2、v1.0.0-rc.1、v0.7.0 四个版本已在 Gitea 补发完成（各带对应版本 exe、预发布号标 prerelease），重跑同一 tag 走更新分支并覆盖同名资产（幂等实测通过）。**
+
+1. **实现**：新增 `release` job（needs build-windows、runs-on windows-latest），全程走 Gitea 自己的 REST API——curl 传 JSON 与 multipart 资产，PowerShell 5.1 只做 JSON 读写与流程控制（该主机无 Node.js，action 方案不可行）；`permissions` 由 read 提为 write。发布说明优先 `release-notes/<tag>.md`，缺失时由提交记录生成并附 Gitea compare 链接；tag 含 `-` 标 prerelease。
+2. **补发入口**：`workflow_dispatch` 新增 `release_tag` 输入（填了它即按该 tag 取源码打包并发布），这是给旧 tag 补发的唯一可行方式（原因见下条）；手动不带该输入时 release job 打印 skip 并正常退出。
+3. **「推 v1.0.0 却直接死掉」的根因（实测，非新流水线缺陷）**：tag 推送时 Gitea 用的是**该 tag 提交内的 workflow**，而 `ea79bba`（v1.0.0）处还是旧版双平台配置——`build-macos` 无 runner 可派（永久排队）、`build-windows` 在拉 `actions/checkout@v4` 时撞上 runner 主机访问 github.com 的超时（日志为 TLS handshake timeout / dial timeout），三个 job 全废。已发布的 tag 不重写；该次运行（run 77）仍在排队，Gitea API 没有取消入口，需在 Actions 页面手动取消或删除。
+4. **PowerShell 5.1 的四个坑（都写进工作流注释）**：① 用 `ConvertTo-Json` 拼请求体时 Gitea 回 422「/body 是对象」——改用 runner 自带 Python 的 `json.dump(ensure_ascii=False)` 生成请求体后一次通过（同一分支在生成说明路径上曾成功，未再深究 PS 侧差异，直接换掉序列化实现）；② `ConvertFrom-Json` 输出数组时不展开，`@(管道)` 会把它当**单个元素**（`$a.id` 变成 `"12 13"`，DELETE 的 URL 带空格而失败）——先赋值再 `foreach`；③ `curl -o $null` 会把空参数传给 curl，DELETE 静默失败（曾留下两个同名资产）——改为写临时文件并校验 HTTP 码，上传后再复查同名资产恰好一个；④ git 的原生输出必须用 .NET Process 以 UTF-8 读——把 `[Console]::OutputEncoding` 设为 UTF-8 在本宿主（stdout 被重定向、无控制台）静默无效，发布说明会按 cp936 解成乱码。
+5. **两个发布页的差异（核实于今日）**：Gitea 现有 10 个 Release（其中 v0.2.2/0.2.1/0.2.0/0.1.1/0.1 是当年手工发布的，GitHub 侧没有）；GitHub 另有 **12 个旧版本（v0.3.0–v0.6.2）Gitea 侧尚未补**——补发命令见下条记录的操作入口（`release_tag` 一次一个 tag），其中 v0.3.0 的产物名是早期的 `nginx-manager.exe`（不含版本号），补它需要先把 release job 的资产匹配放宽。
+6. **核实口径**：以「run 全绿 + Release 资产核对（名称/字节数）」为准（run 81/86/87/88/89）；exe 字节数每轮略有差异是 PyInstaller 嵌入时间戳所致（见上一条记录第 6 点）。
 
 
 ## 六、怎样验证进度（可复现命令）

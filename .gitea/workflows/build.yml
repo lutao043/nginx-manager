@@ -35,7 +35,7 @@ on:
         description: "Force re-download/reinstall Python (default: reuse installed interpreter)"
         default: "false"
       release_tag:
-        description: "Publish a Gitea release for this existing tag (e.g. v1.0.0); empty means build only"
+        description: "Publish a Gitea release for an existing version tag; empty means build only"
         default: ""
 
 permissions:
