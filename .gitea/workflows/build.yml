@@ -67,17 +67,26 @@ jobs:
 
       # 2) Python 3.13（含 tcl/tk：界面与 PyInstaller 都依赖）：装到用户目录，仅首次下载安装
       #    安装包按国内镜像优先的顺序取（python.org 直连实测约 30KB/s，27.5MB 要十几分钟）
+      #    自愈：解释器必须真的能跑出 PYOK 才复用；缺 DLL 的解释器会「静默成功」
+      #    （加载器报错不进进程输出、退出码是负数，if errorlevel 判不出来），故用 findstr 校验。
       - name: Prepare Python
         shell: cmd
         run: |
           @echo off
           set BUILD_ROOT=%USERPROFILE%\nginx-manager-build
           set PY_ROOT=%BUILD_ROOT%\python313
-          set PY_VER=3.13.7
+          set PROBE=%BUILD_ROOT%\pyprobe.txt
           set BUNDLE=%BUILD_ROOT%\py-installer.exe
+          set PY_VER=3.13.7
           set FORCE_REINSTALL=${{ inputs.force_python_reinstall }}
           if not exist "%BUILD_ROOT%" mkdir "%BUILD_ROOT%"
-          if exist "%PY_ROOT%\python.exe" if not "%FORCE_REINSTALL%"=="true" goto :havepy
+          if "%FORCE_REINSTALL%"=="true" goto :install
+          if not exist "%PY_ROOT%\python.exe" goto :install
+          "%PY_ROOT%\python.exe" -c "print('PYOK')" >"%PROBE%" 2>&1
+          findstr /x /c:"PYOK" "%PROBE%" >nul 2>&1
+          if not errorlevel 1 goto :havepy
+          echo [py] interpreter present but not runnable, reinstalling
+          :install
           echo [py] fetching python %PY_VER% installer ...
           for %%U in ("https://mirrors.ustc.edu.cn/python/%PY_VER%/python-%PY_VER%-amd64.exe" "https://mirrors.huaweicloud.com/python/%PY_VER%/python-%PY_VER%-amd64.exe" "https://registry.npmmirror.com/-/binary/python/%PY_VER%/python-%PY_VER%-amd64.exe" "https://www.python.org/ftp/python/%PY_VER%/python-%PY_VER%-amd64.exe") do (
             if exist "%BUNDLE%" del /q "%BUNDLE%"
@@ -88,14 +97,18 @@ jobs:
           echo [py] ERROR: all mirrors failed
           exit /b 1
           :downloaded
-          if "%FORCE_REINSTALL%"=="true" if exist "%PY_ROOT%" rmdir /s /q "%PY_ROOT%"
+          if exist "%PY_ROOT%" rmdir /s /q "%PY_ROOT%"
           echo [py] installing to %PY_ROOT% ...
-          start /wait "" "%BUNDLE%" /quiet InstallAllUsers=0 TargetDir="%PY_ROOT%" Include_tcltk=1 Include_pip=1 Include_launcher=0 PrependPath=0 AssociateFiles=0 Shortcuts=0 Include_test=0 Include_doc=0 Include_dev=0
-          if exist "%PY_ROOT%\python.exe" goto :havepy
-          echo [py] no interpreter after install (stale MSI registration?), retrying with /repair
-          start /wait "" "%BUNDLE%" /quiet /repair InstallAllUsers=0
+          "%BUNDLE%" /quiet InstallAllUsers=0 TargetDir="%PY_ROOT%" Include_tcltk=1 Include_pip=1 Include_launcher=0 PrependPath=0 AssociateFiles=0 Shortcuts=0 Include_test=0 Include_doc=0 Include_dev=0
+          echo [py] installer exit=%errorlevel%
           if not exist "%PY_ROOT%\python.exe" (
-            echo [py] ERROR: python install failed
+            echo [py] no interpreter after install (stale MSI registration?), retrying with /repair
+            "%BUNDLE%" /quiet /repair InstallAllUsers=0
+          )
+          "%PY_ROOT%\python.exe" -c "print('PYOK')" >"%PROBE%" 2>&1
+          findstr /x /c:"PYOK" "%PROBE%" >nul 2>&1
+          if errorlevel 1 (
+            echo [py] ERROR: interpreter not runnable after install and repair
             exit /b 1
           )
           :havepy
