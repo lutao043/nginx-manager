@@ -174,10 +174,11 @@ jobs:
 
   # 5) 发布：仅 tag 推送时执行，建或更新 Gitea Release 并挂上 exe（与 .github 侧同语义）。
   #    幂等：同一 tag 重跑（rerun / 重推 tag）会更新说明并覆盖同名资产。
-  #    发布说明优先取 release-notes/<tag>.md，缺失时由提交记录生成并附 compare 链接；
-  #    预发布号（tag 含 -）标记 prerelease。全部 HTTP 走 curl，PowerShell 只做 JSON 读写。
-  #    PS 5.1 用 [Console]::OutputEncoding 解码原生命令输出（中文 Windows 默认 cp936），
-  #    不设成 UTF-8 就会把 git log 的 UTF-8 提交信息解成乱码再写进发布说明——故脚本首行即设置。
+  #    发布说明优先取 release-notes/<tag>.md（按 UTF-8 读入），缺失时由提交记录生成并附
+  #    compare 链接；预发布号（tag 含 -）标记 prerelease。全部 HTTP 走 curl，PowerShell 只做 JSON 读写。
+  #    git 输出必须用 .NET Process 以 UTF-8 读取：PS 5.1 解码原生命令输出走
+  #    [Console]::OutputEncoding（中文 Windows 默认 cp936），在本宿主（stdout 被重定向、
+  #    无控制台）把它设成 UTF-8 是静默无效的——实测发布说明仍按 cp936 解成乱码。
   release:
     needs: [build-windows]
     if: startsWith(github.ref, 'refs/tags/v')
@@ -189,8 +190,22 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = 'Stop'
-          # native command output (git log) must be decoded as UTF-8, not cp936
-          try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { Write-Host '[rel] warn: cannot set console output encoding' }
+
+          function Get-GitText([string]$workDir, [string[]]$gitArgs) {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = 'git'
+            $psi.Arguments = (($gitArgs | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' ')
+            $psi.WorkingDirectory = $workDir
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+            $p = [System.Diagnostics.Process]::Start($psi)
+            $out = $p.StandardOutput.ReadToEnd()
+            $p.WaitForExit()
+            return $out
+          }
+
           $root   = Join-Path $env:USERPROFILE 'nginx-manager-build'
           $src    = Join-Path $root 'src'
           $dist   = Join-Path $root 'dist'
@@ -207,21 +222,21 @@ jobs:
           if (-not $exe) { throw "[rel] ERROR: no exe found in $dist" }
           Write-Host "[rel] asset=$($exe.Name) size=$($exe.Length)"
 
-          # release notes: repo notes file first, else generated from commit log
+          # release notes: repo notes file first, else generated from the commit log
           $notesPath = Join-Path $src "release-notes\$tag.md"
           if (Test-Path $notesPath) {
             $notes = Get-Content -Raw -Encoding UTF8 $notesPath
             Write-Host "[rel] notes from release-notes/$tag.md"
           } else {
-            Push-Location $src
-            $prev = (git describe --tags --abbrev=0 "$tag^" 2>$null | Select-Object -First 1)
+            $prev = (Get-GitText $src @('describe','--tags','--abbrev=0',"$tag^") | Where-Object { $_ } | Select-Object -First 1)
             if ($prev) {
-              $lines = git log "$prev..$tag" --no-merges --pretty=format:'- %s' | Where-Object { $_ -notlike '- release: *' }
+              $logText = Get-GitText $src @('log',"$prev..$tag",'--no-merges','--pretty=format:- %s')
+              $lines = ($logText -split "`r?`n") | Where-Object { $_ -and ($_ -notlike '- release: *') }
               $notes = ($lines -join "`n") + "`n`n**Full Changelog**: $($env:GITHUB_SERVER_URL)/$repo/compare/$prev...$tag"
             } else {
-              $notes = (git log $tag --no-merges --pretty=format:'- %s') -join "`n"
+              $logText = Get-GitText $src @('log',$tag,'--no-merges','--pretty=format:- %s')
+              $notes = (($logText -split "`r?`n") | Where-Object { $_ }) -join "`n"
             }
-            Pop-Location
             Write-Host "[rel] notes generated from commit log (prev=$prev)"
           }
           if (-not $notes) { $notes = 'see commit log' }
