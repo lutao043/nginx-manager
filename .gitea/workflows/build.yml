@@ -317,7 +317,13 @@ jobs:
           foreach ($a in $assets) {
             if ($a.name -eq $exe.Name) {
               Write-Host "[rel] removing existing asset id=$($a.id)"
-              & curl.exe -s -o $null -X DELETE -H $auth "$api/releases/$relId/assets/$($a.id)" | Out-Null
+              $delFile = Join-Path $tmp 'del.json'
+              $codeDel = & curl.exe -s -o $delFile -w '%{http_code}' -X DELETE -H $auth "$api/releases/$relId/assets/$($a.id)"
+              $codeDel = "$codeDel".Trim()
+              if ($codeDel -ne '204') {
+                Write-Host (Get-Content -Raw -Encoding UTF8 $delFile)
+                throw "[rel] ERROR: asset delete failed http=$codeDel"
+              }
             }
           }
 
