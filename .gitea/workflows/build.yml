@@ -176,6 +176,8 @@ jobs:
   #    幂等：同一 tag 重跑（rerun / 重推 tag）会更新说明并覆盖同名资产。
   #    发布说明优先取 release-notes/<tag>.md，缺失时由提交记录生成并附 compare 链接；
   #    预发布号（tag 含 -）标记 prerelease。全部 HTTP 走 curl，PowerShell 只做 JSON 读写。
+  #    PS 5.1 用 [Console]::OutputEncoding 解码原生命令输出（中文 Windows 默认 cp936），
+  #    不设成 UTF-8 就会把 git log 的 UTF-8 提交信息解成乱码再写进发布说明——故脚本首行即设置。
   release:
     needs: [build-windows]
     if: startsWith(github.ref, 'refs/tags/v')
@@ -187,8 +189,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = 'Stop'
-          # PS 5.1 用 [Console]::OutputEncoding 解码原生命令输出（中文 Windows 默认 cp936），
-          # 不改就会把 git log 的 UTF-8 提交信息解成乱码再写进发布说明。
+          # native command output (git log) must be decoded as UTF-8, not cp936
           try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { Write-Host '[rel] warn: cannot set console output encoding' }
           $root   = Join-Path $env:USERPROFILE 'nginx-manager-build'
           $src    = Join-Path $root 'src'
