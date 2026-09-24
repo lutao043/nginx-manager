@@ -103,6 +103,16 @@ jobs:
           if errorlevel 1 exit /b 1
           "%PY_ROOT%\python.exe" -c "import tkinter;print('[py] tkinter', tkinter.TkVersion)"
           if errorlevel 1 exit /b 1
+          "%PY_ROOT%\python.exe" -m pip --version
+          if errorlevel 1 (
+            echo [py] pip missing, bootstrapping with ensurepip
+            "%PY_ROOT%\python.exe" -m ensurepip --upgrade
+            "%PY_ROOT%\python.exe" -m pip --version
+          )
+          if errorlevel 1 (
+            echo [py] ERROR: pip unavailable
+            exit /b 1
+          )
           exit /b 0
 
       # 3) 打包：build.py 自动生成 version_info.py 并调 PyInstaller（版本号取自 backend/server.py）
@@ -115,10 +125,10 @@ jobs:
           set PY_ROOT=%BUILD_ROOT%\python313
           cd /d "%BUILD_ROOT%\src"
           if errorlevel 1 exit /b 1
-          "%PY_ROOT%\python.exe" -m pip install --quiet --disable-pip-version-check --timeout 60 -i https://pypi.tuna.tsinghua.edu.cn/simple pyinstaller
+          "%PY_ROOT%\python.exe" -m pip install --quiet --disable-pip-version-check --retries 5 --timeout 60 -i https://pypi.tuna.tsinghua.edu.cn/simple pyinstaller
           if errorlevel 1 (
             echo [build] mirror index failed, retry on official pypi
-            "%PY_ROOT%\python.exe" -m pip install --quiet --disable-pip-version-check --timeout 60 pyinstaller
+            "%PY_ROOT%\python.exe" -m pip install --quiet --disable-pip-version-check --retries 5 --timeout 60 pyinstaller
           )
           if errorlevel 1 exit /b 1
           "%PY_ROOT%\python.exe" build.py
